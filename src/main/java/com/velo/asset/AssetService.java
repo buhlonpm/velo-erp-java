@@ -26,6 +26,7 @@ import com.velo.finance.FinanceTransactionRepository;
 import com.velo.finance.dto.TransactionResponse;
 import com.velo.gps.GpsTracker;
 import com.velo.gps.GpsTrackerRepository;
+import com.velo.rental.RentalExtensionRepository;
 import com.velo.rental.RentalRepository;
 import com.velo.rental.dto.RentalResponse;
 import com.velo.user.User;
@@ -54,6 +55,7 @@ public class AssetService {
     private final FinanceAccountRepository financeAccountRepository;
     private final FinanceCategoryRepository financeCategoryRepository;
     private final RentalRepository rentalRepository;
+    private final RentalExtensionRepository rentalExtensionRepository;
     private final GpsTrackerRepository gpsTrackerRepository;
     private final AssetEventRepository eventRepository;
     private final AssetEventService eventService;
@@ -78,14 +80,11 @@ public class AssetService {
         if (assetRepository.existsByInventoryNumber(request.inventoryNumber())) {
             throw new ConflictException("Актив с таким инвентарным номером уже существует");
         }
-        // покупка обязательна: цена всегда (0 — «в комплекте», ничего не списывается),
-        // счёт списания — только при ненулевой цене
+        // покупка обязательна: дата и цена > 0 + счёт списания;
+        // исключение — актив «в комплекте с велосипедом»: цена 0, дата наследуется от велосипеда
         validatePurchaseDate(request.purchasedAt());
         if (request.purchasePrice() == null) {
-            throw new ConflictException("Укажите цену покупки (0 — если в комплекте)");
-        }
-        if (request.purchasePrice() > 0 && request.purchaseAccountId() == null) {
-            throw new ConflictException("Укажите счёт списания за покупку");
+            throw new ConflictException("Укажите цену покупки");
         }
         BikeAsset bundledBike = null;
         if (request.bundledBikeId() != null) {
@@ -96,6 +95,16 @@ public class AssetService {
                 throw new ConflictException("Актив в комплекте с велосипедом — цена покупки должна быть 0");
             }
             bundledBike = findBike(request.bundledBikeId());
+        } else {
+            if (request.purchasePrice() <= 0) {
+                throw new ConflictException("Цена покупки должна быть больше 0");
+            }
+            if (request.purchasedAt() == null) {
+                throw new ConflictException("Укажите дату покупки");
+            }
+            if (request.purchaseAccountId() == null) {
+                throw new ConflictException("Укажите счёт списания за покупку");
+            }
         }
         Asset asset = switch (request.type()) {
             case BIKE -> buildBike(request);
@@ -127,11 +136,10 @@ public class AssetService {
                     "Заведён в систему, покупка за " + request.purchasePrice() + " ₽",
                     request.purchasePrice(), purchase, author);
         } else {
+            // цена 0 возможна только у комплектного актива
             eventService.record(saved, AssetEventType.PURCHASE,
-                    bundledBike != null
-                            ? "Заведён в систему, в комплекте с " + bundledBike.getName()
-                                    + " (" + bundledBike.getInventoryNumber() + ")"
-                            : "Заведён в систему, в комплекте (0 ₽)",
+                    "Заведён в систему, в комплекте с " + bundledBike.getName()
+                            + " (" + bundledBike.getInventoryNumber() + ")",
                     0, null, author);
         }
         if (bundledBike != null) {
@@ -445,7 +453,9 @@ public class AssetService {
 
         List<RentalResponse> rentals = rentalRepository.findAllByAssetId(assetId).stream()
                 .map(rental -> RentalResponse.from(rental, now,
-                        financeTransactionRepository.incomeSumByRentalId(rental.getId())))
+                        financeTransactionRepository.paidSumByRentalId(rental.getId()),
+                        financeTransactionRepository.refundedSumByRentalId(rental.getId()),
+                        rentalExtensionRepository.findAllByRentalIdOrderByCreatedAtAsc(rental.getId())))
                 .toList();
 
         int purchasePrice = asset.getPurchasePrice() != null ? asset.getPurchasePrice() : 0;

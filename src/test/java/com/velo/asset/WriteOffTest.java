@@ -47,9 +47,11 @@ class WriteOffTest {
 
         // велосипед + смонтированная АКБ
         String bike = createAsset(admin, "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-W1\","
-                + "\"purchasePrice\":90000,\"purchaseAccountId\":\"" + account + "\"}");
+                + "\"purchasePrice\":90000,\"purchaseAccountId\":\"" + account + "\","
+                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}");
         String battery = createAsset(admin, "{\"type\":\"battery\",\"inventoryNumber\":\"AKB-W1\","
-                + "\"purchasePrice\":40000,\"purchaseAccountId\":\"" + account + "\"}");
+                + "\"purchasePrice\":40000,\"purchaseAccountId\":\"" + account + "\","
+                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}");
         postJson(admin, "/api/assets/" + battery + "/mount/" + bike, null).andExpect(status().isOk());
 
         // АКБ сломалась на велосипеде → списание, демонтаж

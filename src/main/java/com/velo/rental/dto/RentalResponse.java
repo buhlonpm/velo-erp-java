@@ -1,6 +1,7 @@
 package com.velo.rental.dto;
 
 import com.velo.rental.Rental;
+import com.velo.rental.RentalExtension;
 import com.velo.rental.RentalItem;
 
 import java.time.Instant;
@@ -19,12 +20,16 @@ public record RentalResponse(
         int deposit,
         Integer buyoutPrice,
         String comment,
-        /** Сумма по позициям на текущий момент (для rent_to_own — цена выкупа). */
+        /** Сумма по позициям: предоплаченный период целиком, просрочка — по факту (rent_to_own — цена выкупа). */
         int amount,
-        /** Сколько уже внесено по этой аренде (приходные операции с rental_id). */
+        /** Оплачено по аренде: только приходы (операции оплаты с rental_id). */
         int paidAmount,
+        /** Возвращено клиенту: расходные операции с rental_id (блок «Возвраты»). */
+        int refundedAmount,
         List<ItemResponse> items,
-        Instant createdAt
+        Instant createdAt,
+        /** Продления аренды в порядке создания. */
+        List<ExtensionResponse> extensions
 ) {
     public record ItemResponse(
             UUID id,
@@ -51,7 +56,29 @@ public record RentalResponse(
         }
     }
 
-    public static RentalResponse from(Rental rental, Instant now, int paidAmount) {
+    public record ExtensionResponse(
+            UUID id,
+            int duration,
+            String durationUnit,
+            Instant fromEndAt,
+            Instant toEndAt,
+            Instant createdAt,
+            String createdByName
+    ) {
+        static ExtensionResponse from(RentalExtension extension) {
+            return new ExtensionResponse(
+                    extension.getId(),
+                    extension.getDuration(),
+                    extension.getDurationUnit().getValue(),
+                    extension.getFromEndAt(),
+                    extension.getToEndAt(),
+                    extension.getCreatedAt(),
+                    extension.getCreatedBy() != null ? extension.getCreatedBy().getFullName() : null);
+        }
+    }
+
+    public static RentalResponse from(Rental rental, Instant now, int paidAmount, int refundedAmount,
+                                      List<RentalExtension> extensions) {
         int amount = rental.getKind() == com.velo.rental.RentalKind.RENT_TO_OWN
                 ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
                 : rental.getItems().stream().mapToInt(item -> item.amount(now)).sum();
@@ -68,7 +95,9 @@ public record RentalResponse(
                 rental.getComment(),
                 amount,
                 paidAmount,
+                refundedAmount,
                 rental.getItems().stream().map(ItemResponse::from).toList(),
-                rental.getCreatedAt());
+                rental.getCreatedAt(),
+                extensions.stream().map(ExtensionResponse::from).toList());
     }
 }

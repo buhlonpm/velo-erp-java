@@ -7,6 +7,8 @@ public enum AssetStatus {
     AVAILABLE("available"),
     /** АКБ/зарядник смонтированы на велосипеде (не «доступны» и не «в аренде» сами по себе). */
     MOUNTED("mounted"),
+    /** Зарезервирован под аренду-черновик (выдачи ещё не было). */
+    RESERVED("reserved"),
     RENTED("rented"),
     MAINTENANCE("maintenance"),
     SOLD("sold"),

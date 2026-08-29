@@ -4,9 +4,12 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.Getter;
@@ -43,6 +46,11 @@ public class SimCard {
     @Column(name = "purchase_price")
     private Integer purchasePrice;
 
+    /** Трекер, с которым симка шла в комплекте (NULL — куплена отдельно). */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "bundled_tracker_id")
+    private GpsTracker bundledTracker;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private SimCardStatus status = SimCardStatus.ACTIVE;
@@ -50,6 +58,10 @@ public class SimCard {
     @Enumerated(EnumType.STRING)
     @Column(name = "write_off_reason", length = 20)
     private com.velo.asset.WriteOffReason writeOffReason;
+
+    /** Комментарий списания (в т.ч. каскадного — вместе с трекером). */
+    @Column(name = "write_off_comment", columnDefinition = "TEXT")
+    private String writeOffComment;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

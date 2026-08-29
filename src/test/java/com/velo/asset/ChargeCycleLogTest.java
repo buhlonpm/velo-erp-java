@@ -49,7 +49,8 @@ class ChargeCycleLogTest {
         String accountId = extract(mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + admin))
                 .andReturn().getResponse().getContentAsString(), "id");
-        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId + "\"";
+        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
 
         String battery = extract(mvc.perform(post("/api/assets")
                         .header("Authorization", "Bearer " + admin)

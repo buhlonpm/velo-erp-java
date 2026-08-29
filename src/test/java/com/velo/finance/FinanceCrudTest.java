@@ -290,14 +290,16 @@ class FinanceCrudTest {
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-SYS1\",\"purchasePrice\":5000,"
-                                + "\"purchaseAccountId\":\"" + accountId + "\"}"))
+                                + "\"purchaseAccountId\":\"" + accountId + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}"))
                 .andExpect(status().isCreated());
 
         // покупка GPS-трекера — тоже системная (прямой связи с транзакцией нет)
         mvc.perform(post("/api/gps-trackers")
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"model\":\"Teltonika FMB920\",\"purchasePrice\":3000,"
+                        .content("{\"model\":\"Teltonika FMB920\",\"purchasedAt\":\"2024-01-10T10:00:00Z\","
+                                + "\"purchasePrice\":3000,"
                                 + "\"purchaseAccountId\":\"" + accountId + "\"}"))
                 .andExpect(status().isCreated());
 

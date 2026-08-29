@@ -80,20 +80,19 @@ class RentalFlowTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString(), "id");
 
-        // аренда без plannedEnd → 409
+        // аренда без срока → 409
         postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customerId + "\",\"items\":[{\"assetId\":\"" + bike1 + "\"}]}")
                 .andExpect(status().isConflict());
 
-        // аренда: 2 велосипеда с разными тарифами + доп. АКБ
-        String plannedEnd = Instant.now().plus(5, ChronoUnit.HOURS).toString();
+        // аренда на 1 час: 2 велосипеда с разными тарифами + доп. АКБ
         MvcResult rentalResult = postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customerId + "\",\"plannedEndAt\":\"" + plannedEnd + "\","
-                                + "\"items\":[{\"assetId\":\"" + bike1 + "\",\"rate\":300},"
-                                + "{\"assetId\":\"" + bike2 + "\",\"rate\":250},"
-                                + "{\"assetId\":\"" + battery + "\"}]}")
+                        "{\"customerId\":\"" + customerId + "\",\"duration\":1,\"durationUnit\":\"hour\","
+                                + "\"items\":[{\"assetId\":\"" + bike1 + "\",\"rate\":300,\"tariffUnit\":\"hour\"},"
+                                + "{\"assetId\":\"" + bike2 + "\",\"rate\":250,\"tariffUnit\":\"day\"},"
+                                + "{\"assetId\":\"" + battery + "\",\"tariffUnit\":\"hour\"}]}")
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.status").value("draft"))
                 .andExpect(jsonPath("$.items.length()").value(3))
                 .andExpect(jsonPath("$.items[0].rate").value(300))
                 .andExpect(jsonPath("$.items[0].tariffUnit").value("hour"))
@@ -103,13 +102,20 @@ class RentalFlowTest {
         String rentalBody = rentalResult.getResponse().getContentAsString();
         String rentalId = extract(rentalBody, "id");
 
-        // активы ушли в «в аренде»; повторная выдача → 409
-        mvc.perform(get("/api/assets?status=rented").header("Authorization", "Bearer " + admin))
+        // черновик: активы в резерве; повторное оформление → 409
+        mvc.perform(get("/api/assets?status=reserved").header("Authorization", "Bearer " + admin))
                 .andExpect(jsonPath("$.length()").value(3));
         postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customerId + "\",\"plannedEndAt\":\"" + plannedEnd + "\","
+                        "{\"customerId\":\"" + customerId + "\",\"duration\":1,\"durationUnit\":\"hour\","
                                 + "\"items\":[{\"assetId\":\"" + bike1 + "\"}]}")
                 .andExpect(status().isConflict());
+
+        // выдача: активы ушли в «в аренде»
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("active"));
+        mvc.perform(get("/api/assets?status=rented").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.length()").value(3));
 
         // возврат по позициям: одна — аренда ещё активна
         String firstItemId = extract(rentalBody, "id", 1);
@@ -154,7 +160,7 @@ class RentalFlowTest {
         // с ценой — ок, amount = цена выкупа
         String rentalId = extract(postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customerId + "\",\"kind\":\"rent_to_own\",\"buyoutPrice\":15000,"
-                                + "\"items\":[{\"assetId\":\"" + charger + "\"}]}")
+                                + "\"items\":[{\"assetId\":\"" + charger + "\",\"tariffUnit\":\"month\"}]}")
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.amount").value(15000))
                 .andExpect(jsonPath("$.paidAmount").value(0))
@@ -212,7 +218,7 @@ class RentalFlowTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + modelId + "')].tariffs[0].price").value(1600));
 
-        // аренда по дневному тарифу: возврат сразу = 1 день × 1600
+        // аренда на 1 день по дневному тарифу: предоплатный период = 1 день × 1600
         String bike = extract(postJson(admin, "/api/assets",
                         "{\"type\":\"bike\",\"inventoryNumber\":\"EV-201\",\"modelId\":\"" + modelId + "\""
                                 + purchaseFields(admin) + "}")
@@ -222,10 +228,9 @@ class RentalFlowTest {
                         "{\"fullName\":\"Тариф Клиент\",\"phone\":\"+7 900 000-00-03\"}")
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString(), "id");
-        String plannedEnd = Instant.now().plus(2, ChronoUnit.DAYS).toString();
         String rentalBody = postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customerId + "\",\"plannedEndAt\":\"" + plannedEnd + "\","
-                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"tariffUnit\":\"day\",\"rate\":1600}]}")
+                        "{\"customerId\":\"" + customerId + "\",\"duration\":1,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1600}]}")
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.amount").value(1600))
                 .andReturn().getResponse().getContentAsString();
@@ -256,7 +261,8 @@ class RentalFlowTest {
         String accountId = extract(mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + token))
                 .andReturn().getResponse().getContentAsString(), "id");
-        return ",\"purchasePrice\":1000,\"purchaseAccountId\":\"" + accountId + "\"";
+        return ",\"purchasePrice\":1000,\"purchaseAccountId\":\"" + accountId
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
     }
 
     private org.springframework.test.web.servlet.ResultActions postJson(String token, String path, String body)

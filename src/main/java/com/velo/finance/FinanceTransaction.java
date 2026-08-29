@@ -69,6 +69,16 @@ public class FinanceTransaction {
     @JoinColumn(name = "asset_id")
     private Asset asset;
 
+    /** Привязка к SIM-карте: системная операция покупки симки. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sim_card_id")
+    private com.velo.gps.SimCard simCard;
+
+    /** Привязка к GPS-трекеру: системная операция покупки трекера. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "gps_tracker_id")
+    private com.velo.gps.GpsTracker gpsTracker;
+
     /** Системная операция создана доменным действием (покупка/продажа техники) — не правится и не удаляется вручную. */
     @Column(name = "is_system", nullable = false)
     private boolean system = false;

@@ -95,8 +95,9 @@ public class FinanceController {
     @GetMapping("/transactions")
     @PreAuthorize(CAN_VIEW_FINANCES)
     public List<TransactionResponse> findTransactions(@RequestParam(required = false) UUID accountId,
-                                                      @RequestParam(required = false) CategoryKind kind) {
-        return financeService.findTransactions(accountId, kind);
+                                                      @RequestParam(required = false) CategoryKind kind,
+                                                      @RequestParam(required = false) UUID rentalId) {
+        return financeService.findTransactions(accountId, kind, rentalId);
     }
 
     /** Приход может провести любой сотрудник (приём денег), расход — только с правом. */

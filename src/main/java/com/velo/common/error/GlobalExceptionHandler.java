@@ -14,6 +14,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
 
@@ -79,6 +80,13 @@ public class GlobalExceptionHandler {
     public ApiError handleDataIntegrity(DataIntegrityViolationException ex) {
         log.warn("Нарушение целостности данных: {}", ex.getMessage());
         return ApiError.of(409, "Conflict", "Операция невозможна: запись связана с другими данными");
+    }
+
+    /** Несуществующий роут — 404, а не 500. */
+    @ExceptionHandler(NoResourceFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ApiError handleNoResource(NoResourceFoundException ex) {
+        return ApiError.of(404, "Not Found", "Эндпоинт не найден");
     }
 
     @ExceptionHandler(Exception.class)

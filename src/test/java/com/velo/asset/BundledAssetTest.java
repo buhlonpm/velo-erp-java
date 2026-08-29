@@ -45,13 +45,7 @@ class BundledAssetTest {
     void bundledBatteryAutoMountsAndWritesHistory() throws Exception {
         String admin = login();
         // у велосипеда своя дата покупки — комплектная АКБ должна унаследовать её
-        String bike = extract(mvc.perform(post("/api/assets")
-                        .header("Authorization", "Bearer " + admin)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND1\","
-                                + "\"purchasePrice\":0,\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString(), "id");
+        String bike = createBike(admin, "VIN-BND1");
 
         // комплектная АКБ: цена 0, счёт не нужен, дата покупки — как у велосипеда
         String battery = extract(mvc.perform(post("/api/assets")
@@ -128,12 +122,57 @@ class BundledAssetTest {
                 .andExpect(jsonPath("$.bikeId").value(org.hamcrest.Matchers.nullValue()));
     }
 
+    @Test
+    void nonBundledRequiresDatePriceAndAccount() throws Exception {
+        String admin = login();
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        // велосипед с ценой 0 — 409 (в комплекте купить нельзя)
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND6\","
+                                + "\"purchasePrice\":0,\"purchasedAt\":\"2024-03-15T10:00:00Z\","
+                                + "\"purchaseAccountId\":\"" + account + "\"}"))
+                .andExpect(status().isConflict());
+
+        // АКБ без режима «в комплекте» с ценой 0 — 409
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"battery\",\"inventoryNumber\":\"AKB-BND5\","
+                                + "\"purchasePrice\":0,\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
+                .andExpect(status().isConflict());
+
+        // без даты покупки — 409
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND7\","
+                                + "\"purchasePrice\":50000,\"purchaseAccountId\":\"" + account + "\"}"))
+                .andExpect(status().isConflict());
+
+        // без счёта списания — 409
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND8\","
+                                + "\"purchasePrice\":50000,\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
+                .andExpect(status().isConflict());
+    }
+
     private String createBike(String token, String vin) throws Exception {
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + token))
+                .andReturn().getResponse().getContentAsString(), "id");
         return extract(mvc.perform(post("/api/assets")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"type\":\"bike\",\"inventoryNumber\":\"" + vin
-                                + "\",\"purchasePrice\":0}"))
+                                + "\",\"purchasePrice\":50000,\"purchaseAccountId\":\"" + account
+                                + "\",\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString(), "id");
     }

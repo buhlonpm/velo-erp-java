@@ -49,7 +49,8 @@ class MileageLogTest {
         String accountId = extract(mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + admin))
                 .andReturn().getResponse().getContentAsString(), "id");
-        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId + "\"";
+        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
 
         String bike = extract(createAsset(admin,
                         "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-M1\",\"mileageKm\":1000" + purchase + "}")
@@ -100,7 +101,8 @@ class MileageLogTest {
         String accountId = extract(mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + admin))
                 .andReturn().getResponse().getContentAsString(), "id");
-        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId + "\"";
+        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
 
         String bike = extract(createAsset(admin,
                         "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BM1\",\"mileageKm\":1000" + purchase + "}")
@@ -139,7 +141,8 @@ class MileageLogTest {
         String accountId = extract(mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + admin))
                 .andReturn().getResponse().getContentAsString(), "id");
-        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId + "\"";
+        String purchase = ",\"purchasePrice\":500,\"purchaseAccountId\":\"" + accountId
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
 
         String bike = extract(createAsset(admin,
                         "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-SB1\"" + purchase + "}")

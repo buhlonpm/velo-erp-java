@@ -9,5 +9,7 @@ public interface TariffRepository extends JpaRepository<Tariff, UUID> {
 
     List<Tariff> findAllByModelIdOrderByUnitAscPriceAsc(UUID modelId);
 
+    boolean existsByModelIdAndUnit(UUID modelId, TariffUnit unit);
+
     boolean existsByModelIdAndNameAndUnit(UUID modelId, String name, TariffUnit unit);
 }

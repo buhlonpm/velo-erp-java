@@ -4,6 +4,7 @@ import com.velo.asset.AssetEventService;
 import com.velo.asset.AssetRepository;
 import com.velo.asset.BikeAsset;
 import com.velo.asset.WriteOffReason;
+import com.velo.common.exception.BadRequestException;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
 import com.velo.finance.CategoryKind;
@@ -36,6 +37,8 @@ import java.util.UUID;
 public class GpsDirectoryService {
 
     private static final String PURCHASE_CATEGORY = "Покупка оборудования";
+    private static final Instant MIN_DATE = Instant.parse("2000-01-01T00:00:00Z");
+    private static final Instant MAX_DATE = Instant.parse("2100-01-01T00:00:00Z");
 
     private final SimCardRepository simCardRepository;
     private final GpsTrackerRepository gpsTrackerRepository;
@@ -50,6 +53,8 @@ public class GpsDirectoryService {
     @Transactional(readOnly = true)
     public List<SimCardResponse> findSimCards(boolean onlyAvailable) {
         return simCardRepository.findAllByOrderByPhoneNumber().stream()
+                // available = активная и не вставлена в трекер
+                .filter(sim -> !onlyAvailable || sim.getStatus() == SimCardStatus.ACTIVE)
                 .map(sim -> {
                     UUID trackerId = gpsTrackerRepository.findBySimCardId(sim.getId())
                             .map(GpsTracker::getId).orElse(null);
@@ -64,16 +69,52 @@ public class GpsDirectoryService {
         if (simCardRepository.existsByPhoneNumber(request.phoneNumber().trim())) {
             throw new ConflictException("SIM-карта с таким номером уже есть");
         }
-        if (request.purchasePrice() != null && request.purchasePrice() > 0 && request.purchaseAccountId() == null) {
-            throw new ConflictException("Укажите счёт списания за покупку SIM-карты");
+        // «В комплекте с трекером»: цена обязана быть 0, расходная операция не создаётся,
+        // дата покупки наследуется от трекера, симка сразу вставляется в него.
+        GpsTracker bundledTracker = null;
+        if (request.bundledTrackerId() != null) {
+            if (request.purchasePrice() != null && request.purchasePrice() > 0) {
+                throw new ConflictException("Комплектная SIM-карта не может иметь цену покупки");
+            }
+            bundledTracker = gpsTrackerRepository.findById(request.bundledTrackerId())
+                    .orElseThrow(() -> new NotFoundException("GPS-трекер не найден"));
+            if (bundledTracker.getStatus() != GpsTrackerStatus.ACTIVE) {
+                throw new ConflictException("Трекер списан или продан — комплектную SIM-карту добавить нельзя");
+            }
+            if (bundledTracker.getSimCard() != null) {
+                throw new ConflictException("В трекере уже установлена SIM-карта");
+            }
+        } else {
+            // Отдельная покупка: дата, цена > 0 и счёт списания обязательны
+            if (request.purchasedAt() == null) {
+                throw new ConflictException("Укажите дату покупки SIM-карты");
+            }
+            if (request.purchasePrice() == null || request.purchasePrice() <= 0) {
+                throw new ConflictException("Укажите цену покупки SIM-карты");
+            }
+            if (request.purchaseAccountId() == null) {
+                throw new ConflictException("Укажите счёт списания за покупку SIM-карты");
+            }
         }
         SimCard simCard = new SimCard();
         simCard.setPhoneNumber(request.phoneNumber().trim());
         simCard.setOperator(request.operator().trim());
         simCard.setNote(request.note() != null ? request.note() : "");
-        simCard.setPurchasedAt(request.purchasedAt());
-        simCard.setPurchasePrice(request.purchasePrice());
+        if (bundledTracker != null) {
+            simCard.setPurchasedAt(bundledTracker.getPurchasedAt());
+            simCard.setPurchasePrice(0);
+        } else {
+            simCard.setPurchasedAt(request.purchasedAt());
+            simCard.setPurchasePrice(request.purchasePrice());
+        }
         SimCard saved = simCardRepository.save(simCard);
+
+        if (bundledTracker != null) {
+            saved.setBundledTracker(bundledTracker);
+            bundledTracker.setSimCard(saved);
+            gpsTrackerRepository.save(bundledTracker);
+            return SimCardResponse.from(saved, bundledTracker.getId());
+        }
 
         if (request.purchasePrice() != null && request.purchasePrice() > 0) {
             FinanceTransaction transaction = new FinanceTransaction();
@@ -84,6 +125,7 @@ public class GpsDirectoryService {
             transaction.setAmount(request.purchasePrice());
             transaction.setDate(request.purchasedAt() != null ? request.purchasedAt() : Instant.now());
             transaction.setComment("Покупка SIM-карты: " + saved.getPhoneNumber());
+            transaction.setSimCard(saved);
             transaction.setSystem(true);
             transaction.setCreatedBy(author);
             financeTransactionRepository.save(transaction);
@@ -107,6 +149,7 @@ public class GpsDirectoryService {
         }
         simCard.setStatus(SimCardStatus.WRITTEN_OFF);
         simCard.setWriteOffReason(request.reason());
+        simCard.setWriteOffComment(request.comment());
         SimCard saved = simCardRepository.save(simCard);
         return SimCardResponse.from(saved, null);
     }
@@ -121,6 +164,7 @@ public class GpsDirectoryService {
         }
         simCard.setStatus(SimCardStatus.ACTIVE);
         simCard.setWriteOffReason(null);
+        simCard.setWriteOffComment(null);
         SimCard saved = simCardRepository.save(simCard);
         UUID trackerId = gpsTrackerRepository.findBySimCardId(id).map(GpsTracker::getId).orElse(null);
         return SimCardResponse.from(saved, trackerId);
@@ -142,6 +186,32 @@ public class GpsDirectoryService {
         }
         if (request.note() != null) {
             simCard.setNote(request.note());
+        }
+        // Дата/цена покупки — только у отдельно купленной симки; у комплектной они наследуются от трекера
+        if (request.purchasedAt() != null || request.purchasePrice() != null) {
+            if (simCard.getBundledTracker() != null) {
+                throw new ConflictException(
+                        "Комплектной SIM-карте дату и цену покупки менять нельзя — они наследуются от трекера");
+            }
+            if (request.purchasedAt() != null) {
+                validatePurchaseDate(request.purchasedAt());
+                simCard.setPurchasedAt(request.purchasedAt());
+            }
+            if (request.purchasePrice() != null) {
+                if (request.purchasePrice() <= 0) {
+                    throw new ConflictException("Цена покупки должна быть больше 0");
+                }
+                simCard.setPurchasePrice(request.purchasePrice());
+            }
+            // синхронизация системной операции покупки (у старых записей её может не быть — тогда просто поля)
+            financeTransactionRepository
+                    .findFirstBySimCard_IdAndCategory_Name(id, PURCHASE_CATEGORY)
+                    .ifPresent(transaction -> {
+                        transaction.setAmount(simCard.getPurchasePrice());
+                        transaction.setDate(simCard.getPurchasedAt() != null
+                                ? simCard.getPurchasedAt() : transaction.getDate());
+                        financeTransactionRepository.save(transaction);
+                    });
         }
         SimCard saved = simCardRepository.save(simCard);
         UUID trackerId = gpsTrackerRepository.findBySimCardId(id).map(GpsTracker::getId).orElse(null);
@@ -171,6 +241,16 @@ public class GpsDirectoryService {
 
     @Transactional
     public GpsTrackerResponse createTracker(CreateGpsTrackerRequest request, User author) {
+        // Покупка обязательна: дата, цена > 0 и счёт списания
+        if (request.purchasedAt() == null) {
+            throw new ConflictException("Укажите дату покупки GPS-трекера");
+        }
+        if (request.purchasePrice() == null || request.purchasePrice() <= 0) {
+            throw new ConflictException("Укажите цену покупки GPS-трекера");
+        }
+        if (request.purchaseAccountId() == null) {
+            throw new ConflictException("Укажите счёт списания за покупку GPS-трекера");
+        }
         GpsTracker tracker = new GpsTracker();
         tracker.setModel(request.model().trim());
         tracker.setImei(request.imei());
@@ -197,6 +277,7 @@ public class GpsDirectoryService {
             transaction.setDate(request.purchasedAt() != null ? request.purchasedAt() : Instant.now());
             transaction.setComment("Покупка GPS-трекера: " + saved.getModel()
                     + (saved.getImei() != null ? " (IMEI " + saved.getImei() + ")" : ""));
+            transaction.setGpsTracker(saved);
             transaction.setSystem(true);
             transaction.setCreatedBy(author);
             financeTransactionRepository.save(transaction);
@@ -204,7 +285,7 @@ public class GpsDirectoryService {
         return toResponse(saved);
     }
 
-    /** Редактирование трекера: модель, IMEI, замена/извлечение симки. */
+    /** Редактирование трекера: модель, IMEI, замена/извлечение симки, дата/цена покупки. */
     @Transactional
     public GpsTrackerResponse updateTracker(UUID id, UpdateGpsTrackerRequest request) {
         GpsTracker tracker = gpsTrackerRepository.findById(id)
@@ -214,6 +295,27 @@ public class GpsDirectoryService {
         }
         if (request.imei() != null) {
             tracker.setImei(request.imei());
+        }
+        if (request.purchasedAt() != null || request.purchasePrice() != null) {
+            if (request.purchasedAt() != null) {
+                validatePurchaseDate(request.purchasedAt());
+                tracker.setPurchasedAt(request.purchasedAt());
+            }
+            if (request.purchasePrice() != null) {
+                if (request.purchasePrice() <= 0) {
+                    throw new ConflictException("Цена покупки должна быть больше 0");
+                }
+                tracker.setPurchasePrice(request.purchasePrice());
+            }
+            // синхронизация системной операции покупки (у старых записей её может не быть — тогда просто поля)
+            financeTransactionRepository
+                    .findFirstByGpsTracker_IdAndCategory_Name(id, PURCHASE_CATEGORY)
+                    .ifPresent(transaction -> {
+                        transaction.setAmount(tracker.getPurchasePrice());
+                        transaction.setDate(tracker.getPurchasedAt() != null
+                                ? tracker.getPurchasedAt() : transaction.getDate());
+                        financeTransactionRepository.save(transaction);
+                    });
         }
         if (Boolean.TRUE.equals(request.clearSimCard())) {
             tracker.setSimCard(null);
@@ -280,13 +382,29 @@ public class GpsDirectoryService {
         }
         tracker.setWriteOffReason(reason);
         tracker.setWriteOffComment(request != null ? request.comment() : null);
+        // Каскад: вставленная симка списывается вместе с трекером — той же причиной и комментарием.
+        // Сознательное исключение: отдельно симку с причиной sold списать нельзя (409 в writeOffSimCard),
+        // но вместе с проданным трекером она уезжает с той же причиной. Денежной операции у симки нет:
+        // при sold приход один — трекерский (создан выше). Связь разрываем, FK живёт на трекере.
+        // Каскад идёт напрямую, не через writeOffSimCard: списание трекера доступно всем сотрудникам,
+        // а у симки своё правило «нельзя списать вставленную» (409) — здесь оно не должно сработать.
+        SimCard simCard = tracker.getSimCard();
+        if (simCard != null) {
+            simCard.setStatus(SimCardStatus.WRITTEN_OFF);
+            simCard.setWriteOffReason(reason);
+            simCard.setWriteOffComment(tracker.getWriteOffComment());
+            tracker.setSimCard(null);
+            simCardRepository.save(simCard);
+        }
         GpsTracker saved = gpsTrackerRepository.save(tracker);
         bike.ifPresent(b -> eventService.record(b, com.velo.asset.AssetEventType.TRACKER_REMOVE,
                 "Трекер " + tracker.getModel() + " выбыл: " + reason.getValue()));
         return toResponse(saved);
     }
 
-    /** Вернуть трекер из списания (ошибочное списание). Проданный вернуть нельзя. */
+    /** Вернуть трекер из списания (ошибочное списание). Проданный вернуть нельзя.
+     *  Симку НЕ воскрешаем: при списании трекера она уехала каскадом, связь разорвана —
+     *  при ошибочном списании симку возвращают отдельно через /sim-cards/{id}/restore. */
     @Transactional
     public GpsTrackerResponse restoreTracker(UUID id) {
         GpsTracker tracker = gpsTrackerRepository.findById(id)
@@ -323,6 +441,13 @@ public class GpsDirectoryService {
 
     private FinanceCategory purchaseCategory() {
         return ensureCategory(PURCHASE_CATEGORY, CategoryKind.EXPENSE);
+    }
+
+    /** Дата покупки в разумных пределах (2000–2100) — отсекает опечатки вроде года 40000. */
+    private static void validatePurchaseDate(Instant purchasedAt) {
+        if (purchasedAt.isBefore(MIN_DATE) || purchasedAt.isAfter(MAX_DATE)) {
+            throw new BadRequestException("Некорректная дата покупки: " + purchasedAt);
+        }
     }
 
     private FinanceCategory saleCategory() {

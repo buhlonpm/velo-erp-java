@@ -14,8 +14,12 @@ public record SimCardResponse(
         Integer purchasePrice,
         String status,
         String writeOffReason,
+        String writeOffComment,
         /** Трекер, в который вставлена симка (NULL — свободна). */
-        UUID trackerId
+        UUID trackerId,
+        /** Трекер, с которым симка шла в комплекте (NULL — куплена отдельно). */
+        UUID bundledTrackerId,
+        String bundledTrackerName
 ) {
     public static SimCardResponse from(SimCard simCard, UUID trackerId) {
         return new SimCardResponse(
@@ -27,6 +31,9 @@ public record SimCardResponse(
                 simCard.getPurchasePrice(),
                 simCard.getStatus() == com.velo.gps.SimCardStatus.ACTIVE ? "active" : "written_off",
                 simCard.getWriteOffReason() != null ? simCard.getWriteOffReason().getValue() : null,
-                trackerId);
+                simCard.getWriteOffComment(),
+                trackerId,
+                simCard.getBundledTracker() != null ? simCard.getBundledTracker().getId() : null,
+                simCard.getBundledTracker() != null ? simCard.getBundledTracker().getModel() : null);
     }
 }

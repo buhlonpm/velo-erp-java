@@ -16,17 +16,18 @@ public record CreateRentalRequest(
         @NotNull UUID customerId,
         RentalKind kind,
         Instant startAt,
-        Instant plannedEndAt,
-        @Min(0) Integer deposit,
+        /** Срок аренды: plannedEndAt = startAt + duration × durationUnit, считает сервер (rent). */
+        @Min(1) Integer duration,
+        TariffUnit durationUnit,
         @Min(0) Integer buyoutPrice,
         @Size(max = 2000) String comment,
         @NotEmpty List<@Valid Item> items
 ) {
     public record Item(
             @NotNull UUID assetId,
-            /** Единица тарифа; не передана — hour. */
+            /** Единица тарифа. rent: игнорируется — сервер ставит durationUnit аренды. rent_to_own: обязательна (409). */
             TariffUnit tariffUnit,
-            /** Цена за единицу; не передана — тариф актива. */
+            /** Цена за единицу; не передана — 0. В справочник модели НЕ сохраняется. */
             @Min(0) Integer rate
     ) {
     }

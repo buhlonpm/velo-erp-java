@@ -46,7 +46,7 @@ public class Rental {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private RentalStatus status = RentalStatus.ACTIVE;
+    private RentalStatus status = RentalStatus.DRAFT;
 
     @Column(name = "start_at", nullable = false)
     private Instant startAt;
@@ -81,8 +81,10 @@ public class Rental {
             return "overdue";
         }
         return switch (status) {
+            case DRAFT -> "draft";
             case ACTIVE -> "active";
             case COMPLETED -> "completed";
+            case COMPLETED_EARLY -> "completed_early";
             case CANCELLED -> "cancelled";
         };
     }

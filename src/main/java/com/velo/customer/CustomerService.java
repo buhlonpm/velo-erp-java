@@ -27,6 +27,12 @@ public class CustomerService {
                 .toList();
     }
 
+    public CustomerResponse findById(UUID id) {
+        Customer customer = customerRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Клиент не найден"));
+        return CustomerResponse.from(customer, rentalRepository.countByCustomerId(id));
+    }
+
     @Transactional
     public CustomerResponse create(CreateCustomerRequest request) {
         Customer customer = new Customer();

@@ -64,9 +64,16 @@ public class RentalItem {
         createdAt = Instant.now();
     }
 
-    /** Стоимость позиции: начатые единицы тарифа (минимум 1) × цена. */
+    /**
+     * Стоимость позиции: предоплаченный период (startAt → plannedEndAt) целиком;
+     * просрочка за периодом досчитывается по факту. Минимум 1 единица тарифа.
+     */
     public int amount(Instant now) {
         Instant end = returnedAt != null ? returnedAt : now;
+        Instant periodEnd = rental.getPlannedEndAt();
+        if (periodEnd != null && periodEnd.isAfter(end)) {
+            end = periodEnd;
+        }
         long seconds = Math.max(0, end.getEpochSecond() - rental.getStartAt().getEpochSecond());
         long unitSeconds = tariffUnit.getSeconds();
         long units = Math.max(1, (seconds + unitSeconds - 1) / unitSeconds);

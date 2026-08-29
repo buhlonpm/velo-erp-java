@@ -59,10 +59,14 @@ class AssetDetailTest {
 
         // GPS: симка + трекер из справочников, установка на велосипед
         String simId = extract(postJson(admin, "/api/sim-cards",
-                        "{\"phoneNumber\":\"+7 900 123-45-67\",\"operator\":\"МТС\"}")
+                        "{\"phoneNumber\":\"+7 900 123-45-67\",\"operator\":\"МТС\","
+                                + "\"purchasedAt\":\"" + purchased + "\",\"purchasePrice\":500,"
+                                + "\"purchaseAccountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         String trackerId = extract(postJson(admin, "/api/gps-trackers",
-                        "{\"model\":\"Teltonika FMB920\",\"simCardId\":\"" + simId + "\"}")
+                        "{\"model\":\"Teltonika FMB920\",\"simCardId\":\"" + simId + "\","
+                                + "\"purchasedAt\":\"" + purchased + "\",\"purchasePrice\":3000,"
+                                + "\"purchaseAccountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         mvc.perform(post("/api/assets/" + bike + "/tracker/" + trackerId)
                         .header("Authorization", "Bearer " + admin))
@@ -83,14 +87,13 @@ class AssetDetailTest {
                                 + "\",\"kind\":\"expense\",\"amount\":4500,\"assetId\":\"" + bike + "\"}")
                 .andExpect(status().isCreated());
 
-        // аренда с этим велосипедом (300/час — тариф задаётся в позиции)
+        // аренда на 1 час с этим велосипедом (300/час — тариф задаётся в позиции)
         String customer = extract(postJson(admin, "/api/customers",
                         "{\"fullName\":\"Деталь Клиент\",\"phone\":\"+7 900 000-00-07\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
-        String plannedEnd = Instant.now().plus(5, ChronoUnit.HOURS).toString();
         postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customer + "\",\"plannedEndAt\":\"" + plannedEnd + "\","
-                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300}]}")
+                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"hour\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300,\"tariffUnit\":\"hour\"}]}")
                 .andExpect(status().isCreated());
 
         // карточка
@@ -110,13 +113,22 @@ class AssetDetailTest {
     @Test
     void secondTrackerInstallRejected() throws Exception {
         String admin = login();
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        String purchase = ",\"purchasedAt\":\"2024-01-10T10:00:00Z\",\"purchasePrice\":2000,"
+                + "\"purchaseAccountId\":\"" + account + "\"";
 
         String bike = extract(postJson(admin, "/api/assets",
-                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-T2\",\"purchasePrice\":0}")
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-T2\",\"purchasePrice\":50000,"
+                                + "\"purchasedAt\":\"2024-01-10T10:00:00Z\",\"purchaseAccountId\":\""
+                                + account + "\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
-        String tracker1 = extract(postJson(admin, "/api/gps-trackers", "{\"model\":\"FMB920 #1\"}")
+        String tracker1 = extract(postJson(admin, "/api/gps-trackers",
+                        "{\"model\":\"FMB920 #1\"" + purchase + "}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
-        String tracker2 = extract(postJson(admin, "/api/gps-trackers", "{\"model\":\"FMB920 #2\"}")
+        String tracker2 = extract(postJson(admin, "/api/gps-trackers",
+                        "{\"model\":\"FMB920 #2\"" + purchase + "}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
         mvc.perform(post("/api/assets/" + bike + "/tracker/" + tracker1)

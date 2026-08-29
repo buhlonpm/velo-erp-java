@@ -14,6 +14,7 @@ import com.velo.finance.dto.TransactionResponse;
 import com.velo.finance.dto.UpdateAccountRequest;
 import com.velo.finance.dto.UpdateTransactionRequest;
 import com.velo.rental.Rental;
+import com.velo.rental.RentalEventRepository;
 import com.velo.rental.RentalRepository;
 import com.velo.user.User;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +34,7 @@ public class FinanceService {
     private final FinanceCategoryRepository categoryRepository;
     private final FinanceTransactionRepository transactionRepository;
     private final RentalRepository rentalRepository;
+    private final RentalEventRepository rentalEventRepository;
     private final AssetRepository assetRepository;
 
     public List<AccountResponse> findAccounts() {
@@ -112,9 +114,14 @@ public class FinanceService {
         categoryRepository.delete(category);
     }
 
-    public List<TransactionResponse> findTransactions(UUID accountId, CategoryKind kind) {
+    public List<TransactionResponse> findTransactions(UUID accountId, CategoryKind kind, UUID rentalId) {
         List<FinanceTransaction> transactions;
-        if (accountId != null && kind != null) {
+        if (rentalId != null && kind != null) {
+            // история оплат/возвратов конкретной аренды (карточка аренды)
+            transactions = transactionRepository.findAllByRentalIdAndKindOrderByDateDesc(rentalId, kind);
+        } else if (rentalId != null) {
+            transactions = transactionRepository.findAllByRentalIdOrderByDateDesc(rentalId);
+        } else if (accountId != null && kind != null) {
             transactions = transactionRepository.findAllByAccountIdAndKindOrderByDateDesc(accountId, kind);
         } else if (accountId != null) {
             transactions = transactionRepository.findAllByAccountIdOrderByDateDesc(accountId);
@@ -168,7 +175,7 @@ public class FinanceService {
 
     /**
      * Правка операции. Доступ — только с правом finance:view (контроллер).
-     * Дата и привязка к аренде не редактируются.
+     * Привязка к аренде не редактируется.
      * Системные операции (покупка/продажа техники) не правятся — меняется само доменное действие.
      */
     @Transactional
@@ -195,6 +202,9 @@ public class FinanceService {
         if (request.amount() != null) {
             transaction.setAmount(request.amount());
         }
+        if (request.date() != null) {
+            transaction.setDate(request.date());
+        }
         if (request.comment() != null) {
             transaction.setComment(request.comment());
         }
@@ -204,7 +214,7 @@ public class FinanceService {
     /**
      * Удаление операции. Баланс пересчитывать не нужно — он вычисляется
      * от списка операций, поэтому всегда корректен после удаления любой,
-     * в том числе давнишней.
+     * в том числе давнишней. Ссылку на операцию в событиях аренды снимаем — событие остаётся.
      * Системные операции (покупка/продажа техники) не удаляются — иначе техника
      * останется в системе, а расход/приход по ней исчезнет.
      */
@@ -217,6 +227,7 @@ public class FinanceService {
                     + "(покупка/продажа техники) и не удаляется. Отменяйте само действие: "
                     + "списание/восстановление актива, трекера или SIM-карты");
         }
+        rentalEventRepository.clearTransactionReference(id);
         transactionRepository.delete(transaction);
     }
 }

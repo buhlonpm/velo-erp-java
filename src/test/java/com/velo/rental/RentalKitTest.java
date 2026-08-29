@@ -46,12 +46,17 @@ class RentalKitTest {
     void mountedBatteryJoinsAsKitAndReturnsWithParent() throws Exception {
         String admin = login();
         String account = extract(getJson(admin, "/api/finance/accounts"), "id");
-        String purchase = ",\"purchasePrice\":1000,\"purchaseAccountId\":\"" + account + "\"";
+        String purchase = ",\"purchasePrice\":1000,\"purchaseAccountId\":\"" + account
+                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"";
 
-        // велосипед + смонтированная АКБ
+        // велосипед + смонтированные АКБ и зарядник
         String bike = createAsset(admin, "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-K1\"" + purchase + "}");
         String battery = createAsset(admin, "{\"type\":\"battery\",\"inventoryNumber\":\"AKB-K1\"" + purchase + "}");
+        String charger = createAsset(admin, "{\"type\":\"charger\",\"inventoryNumber\":\"CHG-K1\"" + purchase + "}");
         mvc.perform(post("/api/assets/" + battery + "/mount/" + bike)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/assets/" + charger + "/mount/" + bike)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk());
 
@@ -59,39 +64,45 @@ class RentalKitTest {
                         "{\"fullName\":\"Кит Клиент\",\"phone\":\"+7 900 000-11-11\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // аренда только с велосипедом — АКБ подтягивается автоматом дочерней позицией
-        String plannedEnd = Instant.now().plus(3, ChronoUnit.HOURS).toString();
+        // аренда только с велосипедом — АКБ и зарядник подтягиваются автоматом дочерними позициями
         String rentalBody = postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customer + "\",\"plannedEndAt\":\"" + plannedEnd + "\","
-                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300}]}")
+                        "{\"customerId\":\"" + customer + "\",\"duration\":3,\"durationUnit\":\"hour\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300,\"tariffUnit\":\"hour\"}]}")
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items.length()").value(3))
                 .andReturn().getResponse().getContentAsString();
         String rentalId = extract(rentalBody, "id");
 
-        // дочерняя позиция: АКБ, тариф 0, parentItemId = позиция велосипеда
+        // дочерние позиции: АКБ и зарядник, тариф 0, parentItemId = позиция велосипеда
         mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[?(@.parentItemId == null && @.assetId == '" + bike + "')]").exists())
                 .andExpect(jsonPath("$.items[?(@.parentItemId != null && @.assetId == '" + battery
+                        + "' && @.rate == 0)]").exists())
+                .andExpect(jsonPath("$.items[?(@.parentItemId != null && @.assetId == '" + charger
                         + "' && @.rate == 0)]").exists());
 
-        // оба актива в аренде
+        // все три актива в резерве (черновик), после выдачи — в аренде
+        mvc.perform(get("/api/assets?status=reserved").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.length()").value(3));
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("active"));
         mvc.perform(get("/api/assets?status=rented").header("Authorization", "Bearer " + admin))
-                .andExpect(jsonPath("$.length()").value(2));
+                .andExpect(jsonPath("$.length()").value(3));
 
-        // возврат родителя → дочерняя возвращается автоматом, аренда завершена
+        // возврат родителя → дочерние возвращаются автоматом, аренда завершена
         String parentItemId = extract(rentalBody, "id", 1);
         postJson(admin, "/api/rentals/" + rentalId + "/items/" + parentItemId + "/return", null)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.items[?(@.assetId == '" + battery + "')].returnedAt").isNotEmpty());
-        // после возврата велосипед снова доступен, а АКБ остаётся на технике (смонтирована)
+                .andExpect(jsonPath("$.items[?(@.assetId == '" + battery + "')].returnedAt").isNotEmpty())
+                .andExpect(jsonPath("$.items[?(@.assetId == '" + charger + "')].returnedAt").isNotEmpty());
+        // после возврата велосипед снова доступен, а АКБ и зарядник остаются на технике
         mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
                 .andExpect(jsonPath("$.length()").value(1));
         mvc.perform(get("/api/assets?status=mounted").header("Authorization", "Bearer " + admin))
-                .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].id").value(battery));
+                .andExpect(jsonPath("$.length()").value(2));
     }
 
     private String login() throws Exception {

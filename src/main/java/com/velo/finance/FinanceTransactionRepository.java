@@ -24,6 +24,14 @@ public interface FinanceTransactionRepository extends JpaRepository<FinanceTrans
     /** Операция покупки актива (привязка к активу + статья «Покупка оборудования»). */
     java.util.Optional<FinanceTransaction> findFirstByAsset_IdAndCategory_Name(UUID assetId, String categoryName);
 
+    /** Операция покупки SIM-карты. */
+    java.util.Optional<FinanceTransaction> findFirstBySimCard_IdAndCategory_Name(UUID simCardId,
+                                                                                 String categoryName);
+
+    /** Операция покупки GPS-трекера. */
+    java.util.Optional<FinanceTransaction> findFirstByGpsTracker_IdAndCategory_Name(UUID trackerId,
+                                                                                    String categoryName);
+
     /** Сумма приходов минус сумма расходов по счёту. */
     @Query("""
             SELECT COALESCE(SUM(CASE WHEN t.kind = com.velo.finance.CategoryKind.INCOME
@@ -33,15 +41,31 @@ public interface FinanceTransactionRepository extends JpaRepository<FinanceTrans
             """)
     int balanceDeltaByAccountId(@Param("accountId") UUID accountId);
 
-    /** Сколько внесено по аренде (приходные операции с rental_id). */
+    /** Оплачено по аренде: только приходы (оплаты клиента). Возвраты — отдельно, см. refundedSumByRentalId. */
     @Query("""
-            SELECT COALESCE(SUM(t.amount), 0)
+            SELECT COALESCE(SUM(CASE WHEN t.kind = com.velo.finance.CategoryKind.INCOME
+                                     THEN t.amount ELSE 0 END), 0)
             FROM FinanceTransaction t
-            WHERE t.rental.id = :rentalId AND t.kind = com.velo.finance.CategoryKind.INCOME
+            WHERE t.rental.id = :rentalId
             """)
-    int incomeSumByRentalId(@Param("rentalId") UUID rentalId);
+    int paidSumByRentalId(@Param("rentalId") UUID rentalId);
+
+    /** Возвращено клиенту по аренде: расходные операции с rental_id. */
+    @Query("""
+            SELECT COALESCE(SUM(CASE WHEN t.kind = com.velo.finance.CategoryKind.EXPENSE
+                                     THEN t.amount ELSE 0 END), 0)
+            FROM FinanceTransaction t
+            WHERE t.rental.id = :rentalId
+            """)
+    int refundedSumByRentalId(@Param("rentalId") UUID rentalId);
 
     List<FinanceTransaction> findAllByAssetIdOrderByDateDesc(UUID assetId);
+
+    /** Операции по аренде (история оплат в карточке аренды). */
+    List<FinanceTransaction> findAllByRentalIdOrderByDateDesc(UUID rentalId);
+
+    /** Операции по аренде заданного типа (оплаты — INCOME, возвраты — EXPENSE). */
+    List<FinanceTransaction> findAllByRentalIdAndKindOrderByDateDesc(UUID rentalId, CategoryKind kind);
 
     /** Сумма операций по активу заданного типа (INCOME/EXPENSE). */
     @Query("""

@@ -11,9 +11,10 @@ public record CreateGpsTrackerRequest(
         @NotBlank @Size(max = 100) String model,
         @Size(max = 32) String imei,
         UUID simCardId,
+        /** Покупка обязательна: дата, цена > 0 и счёт списания. */
         Instant purchasedAt,
-        @Min(0) Integer purchasePrice,
-        /** Если задан вместе с purchasePrice — покупка списывается расходной операцией. */
+        @Min(1) Integer purchasePrice,
+        /** Обязателен — покупка списывается расходной операцией. */
         UUID purchaseAccountId
 ) {
 }

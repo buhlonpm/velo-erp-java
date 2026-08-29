@@ -11,10 +11,13 @@ public record CreateSimCardRequest(
         @NotBlank @Size(max = 32) String phoneNumber,
         @NotBlank @Size(max = 50) String operator,
         @Size(max = 255) String note,
+        /** При отдельной покупке обязателен; в комплекте наследуется от трекера. */
         Instant purchasedAt,
-        /** 0 — в комплекте с трекером. */
+        /** Отдельная покупка — обязательна и > 0; в комплекте — 0/null. */
         @PositiveOrZero Integer purchasePrice,
-        /** Обязателен, если purchasePrice > 0 — покупка списывается расходной операцией. */
-        UUID purchaseAccountId
+        /** Обязателен при отдельной покупке — покупка списывается расходной операцией. */
+        UUID purchaseAccountId,
+        /** «В комплекте с трекером»: цена обязана быть 0, дата покупки наследуется от трекера. */
+        UUID bundledTrackerId
 ) {
 }
