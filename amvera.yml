@@ -1,15 +1,11 @@
 meta:
-  environment: jvm
+  environment: docker
   toolchain:
-    name: gradle
-    version: 21                    # JDK для сборки (gradle:jdk21) и запуска (liberica-openjre:21)
+    name: docker
 
 build:
-  args: -x test                    # тесты на Testcontainers — в облачной сборке Docker недоступен
-  artifacts:
-    "build/libs/*.jar": /          # bootJar → корень приложения
+  dockerfile: Dockerfile
 
 run:
-  jarName: velo-backend-0.0.1-SNAPSHOT.jar
   containerPort: 8080
   persistenceMount: /data
