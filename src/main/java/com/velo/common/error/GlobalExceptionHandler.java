@@ -3,6 +3,7 @@ package com.velo.common.error;
 import com.velo.common.exception.BadRequestException;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
+import com.velo.common.exception.TooManyRequestsException;
 import com.velo.common.exception.UnauthorizedException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -42,6 +43,12 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public ApiError handleUnauthorized(UnauthorizedException ex) {
         return ApiError.of(401, "Unauthorized", ex.getMessage());
+    }
+
+    @ExceptionHandler(TooManyRequestsException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    public ApiError handleTooManyRequests(TooManyRequestsException ex) {
+        return ApiError.of(429, "Too Many Requests", ex.getMessage());
     }
 
     @ExceptionHandler(AccessDeniedException.class)

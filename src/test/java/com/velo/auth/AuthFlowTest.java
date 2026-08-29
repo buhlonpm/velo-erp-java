@@ -156,6 +156,28 @@ class AuthFlowTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void loginIsRateLimitedAfterFiveFailures() throws Exception {
+        // 5 неудачных попыток — обычный 401
+        for (int i = 0; i < 5; i++) {
+            mvc.perform(post("/api/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"email\":\"bruteforce@velo.local\",\"password\":\"wrong\"}"))
+                    .andExpect(status().isUnauthorized());
+        }
+        // 6-я попытка по тому же «IP + email» — блокировка 429
+        mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"bruteforce@velo.local\",\"password\":\"wrong\"}"))
+                .andExpect(status().isTooManyRequests());
+
+        // другой email с того же IP не заблокирован
+        mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"admin@velo.local\",\"password\":\"admin123\"}"))
+                .andExpect(status().isOk());
+    }
+
     private String loginAndGetBody(String email, String password) throws Exception {
         return mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
