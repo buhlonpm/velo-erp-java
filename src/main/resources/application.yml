@@ -1,0 +1,31 @@
+server:
+  port: ${PORT:8081}
+
+spring:
+  application:
+    name: velo-backend
+  datasource:
+    # Локально — PostgreSQL на localhost; на Amvera задаются переменные окружения POSTGRES_*
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/velo}
+    username: ${POSTGRES_NAME:sergey}
+    password: ${POSTGRES_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+app:
+  jwt:
+    # DEV-ONLY секрет. Для прода переопределять через переменную окружения APP_JWT_SECRET.
+    secret: ${APP_JWT_SECRET:velo-dev-secret-key-change-me-in-production-0123456789abcdef}
+    access-token-ttl: PT30M
+    refresh-token-ttl: P30D
+  admin:
+    email: ${APP_ADMIN_EMAIL:admin@velo.local}
+    password: ${APP_ADMIN_PASSWORD:admin123}
+    full-name: Администратор
+  cors:
+    # Через запятую, если источников несколько
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173}

@@ -1,0 +1,2 @@
+ALTER TABLE customers DROP COLUMN deposit;
+ALTER TABLE customers ADD COLUMN address VARCHAR(255) NOT NULL DEFAULT '';

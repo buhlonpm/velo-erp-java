@@ -1,0 +1,166 @@
+package com.velo.asset;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/** «В комплекте с велосипедом»: цена 0, автомонтаж на выбранный велосипед, события в истории. */
+@SpringBootTest
+@AutoConfigureMockMvc
+@Testcontainers
+class BundledAssetTest {
+
+    @Container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
+
+    @DynamicPropertySource
+    static void datasourceProps(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    @Autowired
+    MockMvc mvc;
+
+    @Test
+    void bundledBatteryAutoMountsAndWritesHistory() throws Exception {
+        String admin = login();
+        // у велосипеда своя дата покупки — комплектная АКБ должна унаследовать её
+        String bike = extract(mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND1\","
+                                + "\"purchasePrice\":0,\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        // комплектная АКБ: цена 0, счёт не нужен, дата покупки — как у велосипеда
+        String battery = extract(mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"battery\",\"inventoryNumber\":\"AKB-BND1\","
+                                + "\"purchasePrice\":0,\"bundledBikeId\":\"" + bike + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.bikeId").value(bike))
+                .andExpect(jsonPath("$.bundledBikeId").value(bike))
+                .andExpect(jsonPath("$.purchasedAt").value("2024-03-15T10:00:00Z"))
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        // смонтирована на велосипеде, в итогах и истории
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mountedBatteries[?(@.id == '" + battery + "')]").exists())
+                .andExpect(jsonPath("$.events[?(@.type == 'mount')]").exists());
+
+        // у АКБ в ленте — покупка «в комплекте» и монтаж
+        mvc.perform(get("/api/assets/" + battery + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.type == 'purchase')]").exists())
+                .andExpect(jsonPath("$[?(@.type == 'mount')]").exists());
+    }
+
+    @Test
+    void bundledRejectsPriceAndDuplicateMount() throws Exception {
+        String admin = login();
+        String bike = createBike(admin, "VIN-BND2");
+
+        // комплектный актив с ценой > 0 — 409
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"battery\",\"inventoryNumber\":\"AKB-BND2\","
+                                + "\"purchasePrice\":3000,\"bundledBikeId\":\"" + bike + "\"}"))
+                .andExpect(status().isConflict());
+
+        // первая комплектная АКБ — ок, вторая на тот же велосипед — 409
+        createBundled(admin, bike, "battery", "AKB-BND3");
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"battery\",\"inventoryNumber\":\"AKB-BND4\","
+                                + "\"purchasePrice\":0,\"bundledBikeId\":\"" + bike + "\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void bundledChargerAutoMounts() throws Exception {
+        String admin = login();
+        String bike = createBike(admin, "VIN-BND5");
+
+        String charger = createBundled(admin, bike, "charger", "CHG-BND1");
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mountedChargers[?(@.id == '" + charger + "')]").exists())
+                .andExpect(jsonPath("$.events[?(@.type == 'mount')]").exists());
+
+        // второй зарядник на тот же велосипед — 409
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"charger\",\"inventoryNumber\":\"CHG-BND2\","
+                                + "\"purchasePrice\":0,\"bundledBikeId\":\"" + bike + "\"}"))
+                .andExpect(status().isConflict());
+
+        // зарядник демонтируется обратно на склад
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete("/api/assets/" + charger + "/mount")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bikeId").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    private String createBike(String token, String vin) throws Exception {
+        return extract(mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"" + vin
+                                + "\",\"purchasePrice\":0}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "id");
+    }
+
+    private String createBundled(String token, String bikeId, String type, String inventoryNumber)
+            throws Exception {
+        return extract(mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"" + type + "\",\"inventoryNumber\":\"" + inventoryNumber
+                                + "\",\"purchasePrice\":0,\"bundledBikeId\":\"" + bikeId + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "id");
+    }
+
+    private String login() throws Exception {
+        MvcResult result = mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"admin@velo.local\",\"password\":\"admin123\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return extract(result.getResponse().getContentAsString(), "accessToken");
+    }
+
+    private static String extract(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + field + "\":\"([^\"]+)\"").matcher(json);
+        assertThat(matcher.find()).isTrue();
+        return matcher.group(1);
+    }
+}
