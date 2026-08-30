@@ -1,5 +1,6 @@
 package com.velo.customer;
 
+import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
 import com.velo.customer.dto.CreateCustomerRequest;
 import com.velo.customer.dto.CustomerResponse;
@@ -65,6 +66,16 @@ public class CustomerService {
         }
         Customer saved = customerRepository.save(customer);
         return CustomerResponse.from(saved, rentalRepository.countByCustomerId(id));
+    }
+
+    @Transactional
+    public void delete(UUID id) {
+        Customer customer = customerRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Клиент не найден"));
+        if (rentalRepository.countByCustomerId(id) > 0) {
+            throw new ConflictException("По клиенту есть аренды — удалить нельзя");
+        }
+        customerRepository.delete(customer);
     }
 
     private boolean matches(Customer customer, String query) {

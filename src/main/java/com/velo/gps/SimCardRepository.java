@@ -10,4 +10,6 @@ public interface SimCardRepository extends JpaRepository<SimCard, UUID> {
     List<SimCard> findAllByOrderByPhoneNumber();
 
     boolean existsByPhoneNumber(String phoneNumber);
+
+    boolean existsByBundledTracker_Id(UUID trackerId);
 }

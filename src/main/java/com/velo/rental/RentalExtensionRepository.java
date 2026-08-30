@@ -9,4 +9,7 @@ public interface RentalExtensionRepository extends JpaRepository<RentalExtension
 
     /** Цепочка продлений аренды в порядке создания — по ней пересчитывается срок. */
     List<RentalExtension> findAllByRentalIdOrderByCreatedAtAsc(UUID rentalId);
+
+    /** Удалить все продления аренды (при удалении самой аренды). */
+    void deleteByRentalId(UUID rentalId);
 }

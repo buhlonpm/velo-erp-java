@@ -21,4 +21,9 @@ public interface RentalEventRepository extends JpaRepository<RentalEvent, UUID> 
     @Modifying
     @Query("DELETE FROM RentalEvent e WHERE e.rental.id = :rentalId AND e.type = :type")
     void deleteByRentalIdAndType(@Param("rentalId") UUID rentalId, @Param("type") RentalEventType type);
+
+    /** Удалить всю ленту аренды (при удалении самой аренды). */
+    @Modifying
+    @Query("DELETE FROM RentalEvent e WHERE e.rental.id = :rentalId")
+    void deleteByRentalId(@Param("rentalId") UUID rentalId);
 }

@@ -222,9 +222,16 @@ public class GpsDirectoryService {
     public void deleteSimCard(UUID id) {
         SimCard simCard = simCardRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("SIM-карта не найдена"));
+        if (simCard.getStatus() != SimCardStatus.ACTIVE) {
+            throw new ConflictException("Списанную SIM-карту удалить нельзя — это часть истории");
+        }
         if (gpsTrackerRepository.findBySimCardId(id).isPresent()) {
             throw new ConflictException("SIM-карта вставлена в трекер — сначала удалите/обновите трекер");
         }
+        // системная операция покупки стирается вместе с записью (у комплектной её нет)
+        financeTransactionRepository
+                .findFirstBySimCard_IdAndCategory_Name(id, PURCHASE_CATEGORY)
+                .ifPresent(financeTransactionRepository::delete);
         simCardRepository.delete(simCard);
     }
 
@@ -337,9 +344,22 @@ public class GpsDirectoryService {
     public void deleteTracker(UUID id) {
         GpsTracker tracker = gpsTrackerRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("GPS-трекер не найден"));
+        if (tracker.getStatus() != GpsTrackerStatus.ACTIVE) {
+            throw new ConflictException("Списанный или проданный трекер удалить нельзя — это часть истории");
+        }
         if (assetRepository.findBikeByGpsTrackerId(id).isPresent()) {
             throw new ConflictException("Трекер установлен на велосипед — сначала снимите его");
         }
+        if (tracker.getSimCard() != null) {
+            throw new ConflictException("В трекере SIM-карта — сначала извлеките её");
+        }
+        if (simCardRepository.existsByBundledTracker_Id(id)) {
+            throw new ConflictException("С трекером связана комплектная SIM-карта — сначала удалите её");
+        }
+        // системная операция покупки стирается вместе с записью
+        financeTransactionRepository
+                .findFirstByGpsTracker_IdAndCategory_Name(id, PURCHASE_CATEGORY)
+                .ifPresent(financeTransactionRepository::delete);
         gpsTrackerRepository.delete(tracker);
     }
 

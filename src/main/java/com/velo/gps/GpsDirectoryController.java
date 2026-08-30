@@ -62,8 +62,8 @@ public class GpsDirectoryController {
         return service.restoreSimCard(id);
     }
 
+    /** Удаление доступно всем: только неиспользованная запись (сервис даёт 409 иначе). */
     @DeleteMapping("/sim-cards/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> deleteSimCard(@PathVariable UUID id) {
         service.deleteSimCard(id);
         return ResponseEntity.noContent().build();
@@ -88,8 +88,8 @@ public class GpsDirectoryController {
         return ResponseEntity.status(HttpStatus.CREATED).body(service.createTracker(request, author));
     }
 
+    /** Удаление доступно всем: только неиспользованный трекер (сервис даёт 409 иначе). */
     @DeleteMapping("/gps-trackers/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> deleteTracker(@PathVariable UUID id) {
         service.deleteTracker(id);
         return ResponseEntity.noContent().build();

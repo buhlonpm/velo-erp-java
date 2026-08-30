@@ -212,8 +212,10 @@ class RentalLifecycleTest {
                                 + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         // выдача задним числом (−2 дня): начало 2 дня назад, конец — сегодня
+        // (усечение до секунд — иначе миллисекундный сдвиг даёт ceil 2 дня вместо 1)
         postJson(admin, "/api/rentals/" + rentalId + "/issue",
-                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS) + "\"}")
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS)
+                                .truncatedTo(ChronoUnit.SECONDS) + "\"}")
                 .andExpect(status().isOk());
         postJson(admin, "/api/rentals/" + rentalId + "/payments",
                         "{\"amount\":2000,\"accountId\":\"" + account + "\"}")
@@ -236,8 +238,8 @@ class RentalLifecycleTest {
                         "{\"date\":\"" + Instant.now().minus(3, ChronoUnit.DAYS) + "\"}")
                 .andExpect(status().isConflict());
 
-        // возврат больше начисленной суммы аренды на дату приёма (1 день = 1000 ₽) → 409
-        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        // возврат больше переплаты (оплачено 2000 − начислено за 1 фактический день 1000 = 1000 ₽) → 409
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS).toString();
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + yesterday + "\",\"refundAmount\":2001,\"refundAccountId\":\""
                                 + account + "\"}")
@@ -311,7 +313,8 @@ class RentalLifecycleTest {
                                 + "{\"assetId\":\"" + bikeB + "\",\"rate\":500}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         postJson(admin, "/api/rentals/" + rentalId + "/issue",
-                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS) + "\"}")
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS)
+                                .truncatedTo(ChronoUnit.SECONDS) + "\"}")
                 .andExpect(status().isOk());
         postJson(admin, "/api/rentals/" + rentalId + "/payments",
                         "{\"amount\":3000,\"accountId\":\"" + account + "\"}")
@@ -319,7 +322,7 @@ class RentalLifecycleTest {
 
         // досрочный возврат через сутки БЕЗ возврата денег: сумма не пересчитывается,
         // а фиксируется оплаченной (3000), хотя набежало 1500
-        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS).toString();
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + yesterday + "\"}")
                 .andExpect(status().isOk())
@@ -515,6 +518,82 @@ class RentalLifecycleTest {
         mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + bike + "')]").exists());
+    }
+
+    @Test
+    void deleteRentalWipesAllTraces() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Удаление Клиент\",\"phone\":\"+7 900 000-55-44\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-DEL1\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // черновик удалить нельзя
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", null).andExpect(status().isOk());
+        // активную — тоже нельзя
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+
+        // завершаем (дата приёма = конец периода)
+        String plannedEnd = extract(getJson(admin, "/api/rentals/" + rentalId), "plannedEndAt");
+        postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
+                .andExpect(status().isOk());
+
+        // менеджеру удалять нельзя → 403
+        postJson(admin, "/api/users",
+                        "{\"email\":\"deleter@velo.local\",\"fullName\":\"Менеджер\","
+                                + "\"password\":\"manager-pass-1\",\"role\":\"MANAGER\"}")
+                .andExpect(status().isCreated());
+        MvcResult managerLogin = mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"deleter@velo.local\",\"password\":\"manager-pass-1\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String manager = managerLogin.getResponse().getContentAsString()
+                .split("\"accessToken\":\"")[1].split("\"")[0];
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + manager))
+                .andExpect(status().isForbidden());
+
+        // админ удаляет — не остаётся следов: аренда, лента, операции
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/rentals/" + rentalId + "/events")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/finance/transactions?rentalId=" + rentalId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+        // велосипед остался и снова доступен
+        mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + bike + "')]").exists());
+
+        // отменённую тоже можно удалить
+        String cancelledId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + cancelledId + "/cancel", null).andExpect(status().isOk());
+        mvc.perform(delete("/api/rentals/" + cancelledId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + cancelledId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
     }
 
     private String login() throws Exception {

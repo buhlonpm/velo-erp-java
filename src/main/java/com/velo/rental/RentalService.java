@@ -371,6 +371,26 @@ public class RentalService {
     }
 
     /**
+     * Удаление аренды без следа (только ADMIN — контроллер; только финальные статусы:
+     * cancelled/completed/completed_early). Каскадно стираются события ленты, продления и ВСЕ
+     * финансовые операции по аренде (оплаты/возвраты; балансы счетов вычисляемые — пересчитаются
+     * сами). Позиции аренды удаляются JPA-каскадом.
+     */
+    @Transactional
+    public void delete(UUID rentalId) {
+        Rental rental = findRental(rentalId);
+        if (rental.getStatus() == RentalStatus.DRAFT || rental.getStatus() == RentalStatus.ACTIVE) {
+            throw new ConflictException("Удалить можно только завершённую или отменённую аренду");
+        }
+        // события ссылаются на операции по FK — сначала лента, потом операции
+        rentalEventRepository.deleteByRentalId(rentalId);
+        financeTransactionRepository.findAllByRentalIdOrderByDateDesc(rentalId)
+                .forEach(financeTransactionRepository::delete);
+        rentalExtensionRepository.deleteByRentalId(rentalId);
+        rentalRepository.delete(rental);
+    }
+
+    /**
      * Продление: якорь = max(plannedEndAt, сейчас) — у просроченной аренды продлеваем от текущего
      * момента, иначе новый конец уехал бы в прошлое и сумма не выросла. Новый конец = якорь +
      * duration × unit. Продление хранится отдельной записью (можно править/удалять с пересчётом),
