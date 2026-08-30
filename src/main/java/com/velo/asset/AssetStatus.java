@@ -12,6 +12,8 @@ public enum AssetStatus {
     RENTED("rented"),
     MAINTENANCE("maintenance"),
     SOLD("sold"),
+    /** Выкуплен клиентом по договору rent_to_own (деньги уже пришли платежами, операции нет). */
+    BOUGHT_OUT("bought_out"),
     DECOMMISSIONED("decommissioned");
 
     private final String value;

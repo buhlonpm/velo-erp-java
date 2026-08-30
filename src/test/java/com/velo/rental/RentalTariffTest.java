@@ -25,7 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Единица тарифа позиции = единице срока аренды (rent): сервер ставит её сам,
  * присланная в позиции игнорируется. Справочник тарифов модели арендой не пополняется —
- * он только автоподставляет цену на фронте. У rent_to_own (срока нет) единица позиции обязательна.
+ * он только автоподставляет цену на фронте. У rent_to_own единица позиции — всегда week (ставит сервер).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -83,12 +83,15 @@ class RentalTariffTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
 
-        // rent_to_own: срока нет, единица позиции обязательна → 409
+        // rent_to_own: единицу позиции не шлём — сервер ставит week, график на termWeeks платежей
         String bike3 = createBike(admin, modelId, "VIN-TAR3", purchase);
         postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customer + "\",\"kind\":\"rent_to_own\",\"buyoutPrice\":90000,"
+                                + "\"termWeeks\":26,"
                                 + "\"items\":[{\"assetId\":\"" + bike3 + "\",\"rate\":1500}]}")
-                .andExpect(status().isConflict());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.items[0].tariffUnit").value("week"))
+                .andExpect(jsonPath("$.schedule.length()").value(26));
     }
 
     private String createBike(String token, String modelId, String inventoryNumber, String purchase)

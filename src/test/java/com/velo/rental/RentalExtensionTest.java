@@ -159,13 +159,14 @@ class RentalExtensionTest {
                         "{\"fullName\":\"Продление Клиент 2\",\"phone\":\"+7 900 000-55-55\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // продление «под выкуп» → 409 (там нет фиксированного периода)
+        // продление «под выкуп» → 409 (срок задаёт график платежей)
         String charger = extract(postJson(admin, "/api/assets",
                         "{\"type\":\"charger\",\"inventoryNumber\":\"CHG-EXT1\"" + purchase + "}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         String buyoutRental = extract(postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customer + "\",\"kind\":\"rent_to_own\",\"buyoutPrice\":15000,"
-                                + "\"items\":[{\"assetId\":\"" + charger + "\",\"tariffUnit\":\"month\"}]}")
+                                + "\"termWeeks\":13,"
+                                + "\"items\":[{\"assetId\":\"" + charger + "\"}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         postJson(admin, "/api/rentals/" + buyoutRental + "/extend",
                         "{\"duration\":1,\"durationUnit\":\"day\"}")

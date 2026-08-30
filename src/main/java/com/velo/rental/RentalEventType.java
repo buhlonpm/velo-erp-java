@@ -8,6 +8,8 @@ public enum RentalEventType {
     PAYMENT("payment"),
     ISSUED("issued"),
     EXTENSION("extension"),
+    /** Изменение условий выкупа: сумма, график платежей. */
+    SCHEDULE("schedule"),
     ITEM_RETURN("item_return"),
     REFUND("refund"),
     COMPLETED("completed"),

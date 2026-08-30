@@ -161,17 +161,27 @@ class RentalFlowTest {
 
         // выкуп без цены → 409
         postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customerId + "\",\"kind\":\"rent_to_own\","
+                        "{\"customerId\":\"" + customerId + "\",\"kind\":\"rent_to_own\",\"termWeeks\":13,"
                                 + "\"items\":[{\"assetId\":\"" + charger + "\"}]}")
                 .andExpect(status().isConflict());
 
-        // с ценой — ок, amount = цена выкупа
+        // выкуп без срока (13/26/52 недели) → 409
+        postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customerId + "\",\"kind\":\"rent_to_own\",\"buyoutPrice\":15000,"
+                                + "\"items\":[{\"assetId\":\"" + charger + "\"}]}")
+                .andExpect(status().isConflict());
+
+        // с ценой и сроком — ок, amount = цена выкупа, график из 13 платежей, единица позиции — week
         String rentalId = extract(postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customerId + "\",\"kind\":\"rent_to_own\",\"buyoutPrice\":15000,"
-                                + "\"items\":[{\"assetId\":\"" + charger + "\",\"tariffUnit\":\"month\"}]}")
+                                + "\"termWeeks\":13,"
+                                + "\"items\":[{\"assetId\":\"" + charger + "\"}]}")
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.amount").value(15000))
                 .andExpect(jsonPath("$.paidAmount").value(0))
+                .andExpect(jsonPath("$.termWeeks").value(13))
+                .andExpect(jsonPath("$.items[0].tariffUnit").value("week"))
+                .andExpect(jsonPath("$.schedule.length()").value(13))
                 .andReturn().getResponse().getContentAsString(), "id");
 
         // платёж с привязкой к аренде → paidAmount растёт

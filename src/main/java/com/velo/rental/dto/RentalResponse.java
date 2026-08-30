@@ -4,6 +4,8 @@ import com.velo.rental.Rental;
 import com.velo.rental.RentalAmounts;
 import com.velo.rental.RentalExtension;
 import com.velo.rental.RentalItem;
+import com.velo.rental.RentalKind;
+import com.velo.rental.RentalSchedule;
 
 import java.time.Instant;
 import java.util.List;
@@ -20,6 +22,8 @@ public record RentalResponse(
         Instant plannedEndAt,
         int deposit,
         Integer buyoutPrice,
+        /** Срок выкупа в неделях (rent_to_own). */
+        Integer termWeeks,
         String comment,
         /** Сумма аренды: черновик/active — начисленное (предоплаченный период + просрочка по факту,
          *  rent_to_own — цена выкупа); завершённая — зафиксирована как оплачено − возвращено. */
@@ -31,7 +35,11 @@ public record RentalResponse(
         List<ItemResponse> items,
         Instant createdAt,
         /** Продления аренды в порядке создания. */
-        List<ExtensionResponse> extensions
+        List<ExtensionResponse> extensions,
+        /** График платежей (rent_to_own) с вычисленным погашением; у rent — пустой список. */
+        List<ScheduleItemResponse> schedule,
+        /** Дата ближайшего непогашенного платежа (rent_to_own); null — всё оплачено или rent. */
+        Instant nextPaymentDue
 ) {
     public record ItemResponse(
             UUID id,
@@ -79,9 +87,34 @@ public record RentalResponse(
         }
     }
 
+    /** Строка графика платежей: paidPart — сколько погашено (FIFO из суммы приходов). */
+    public record ScheduleItemResponse(
+            int seq,
+            Instant dueDate,
+            int amount,
+            int paidPart,
+            /** paid / partial / next / pending / overdue */
+            String status
+    ) {
+    }
+
     public static RentalResponse from(Rental rental, Instant now, int paidAmount, int refundedAmount,
                                       List<RentalExtension> extensions) {
         int amount = RentalAmounts.total(rental, now, paidAmount, refundedAmount);
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
+        List<ScheduleItemResponse> schedule = buyout
+                ? RentalSchedule.states(rental.getScheduleItems(), now).stream()
+                        .map(state -> new ScheduleItemResponse(
+                                state.item().getSeq(),
+                                state.item().getDueDate(),
+                                state.item().getAmount(),
+                                state.item().getCoveredAmount(),
+                                state.status().name().toLowerCase()))
+                        .toList()
+                : List.of();
+        Instant nextPaymentDue = buyout && !RentalAmounts.isFinished(rental)
+                ? RentalSchedule.nextPaymentDue(rental.getScheduleItems())
+                : null;
         return new RentalResponse(
                 rental.getId(),
                 rental.getCustomer().getId(),
@@ -92,12 +125,15 @@ public record RentalResponse(
                 rental.getPlannedEndAt(),
                 rental.getDeposit(),
                 rental.getBuyoutPrice(),
+                rental.getTermWeeks(),
                 rental.getComment(),
                 amount,
                 paidAmount,
                 refundedAmount,
                 rental.getItems().stream().map(ItemResponse::from).toList(),
                 rental.getCreatedAt(),
-                extensions.stream().map(ExtensionResponse::from).toList());
+                extensions.stream().map(ExtensionResponse::from).toList(),
+                schedule,
+                nextPaymentDue);
     }
 }

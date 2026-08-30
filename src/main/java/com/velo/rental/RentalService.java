@@ -26,6 +26,7 @@ import com.velo.rental.dto.PaymentRequest;
 import com.velo.rental.dto.RentalEventResponse;
 import com.velo.rental.dto.RentalResponse;
 import com.velo.rental.dto.ReturnItemRequest;
+import com.velo.rental.dto.UpdateRentalRequest;
 import com.velo.tariff.TariffUnit;
 import com.velo.user.User;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +59,9 @@ public class RentalService {
     private static final String RENTAL_PAYMENT_CATEGORY = "Оплата аренды";
     private static final String RENTAL_REFUND_CATEGORY = "Возврат по аренде";
 
+    /** Допустимые сроки выкупа в неделях. */
+    private static final List<Integer> BUYOUT_TERM_WEEKS = List.of(13, 26, 52);
+
     @Transactional(readOnly = true)
     public List<RentalResponse> findAll(String status) {
         Instant now = Instant.now();
@@ -76,7 +80,7 @@ public class RentalService {
     public RentalResponse create(CreateRentalRequest request, User author) {
         RentalKind kind = request.kind() != null ? request.kind() : RentalKind.RENT;
         Instant startAt = request.startAt() != null ? request.startAt() : Instant.now();
-        // rent: конец периода фиксированный, считает сервер из срока; rent_to_own — без срока
+        // rent: конец периода из срока; rent_to_own: конец = дата последнего платежа графика
         Instant plannedEndAt = null;
         if (kind == RentalKind.RENT) {
             if (request.duration() == null || request.durationUnit() == null) {
@@ -84,8 +88,14 @@ public class RentalService {
             }
             plannedEndAt = startAt.plusSeconds(request.duration() * request.durationUnit().getSeconds());
         }
-        if (kind == RentalKind.RENT_TO_OWN && request.buyoutPrice() == null) {
-            throw new ConflictException("Для выкупа нужна цена выкупа");
+        if (kind == RentalKind.RENT_TO_OWN) {
+            if (request.buyoutPrice() == null) {
+                throw new ConflictException("Для выкупа нужна общая сумма выкупа");
+            }
+            if (request.termWeeks() == null || !BUYOUT_TERM_WEEKS.contains(request.termWeeks())) {
+                throw new ConflictException("Срок выкупа — 13, 26 или 52 недели");
+            }
+            plannedEndAt = startAt.plusSeconds((long) (request.termWeeks() - 1) * TariffUnit.WEEK.getSeconds());
         }
 
         Customer customer = customerRepository.findById(request.customerId())
@@ -97,6 +107,7 @@ public class RentalService {
         rental.setStartAt(startAt);
         rental.setPlannedEndAt(plannedEndAt);
         rental.setBuyoutPrice(request.buyoutPrice());
+        rental.setTermWeeks(request.termWeeks());
         rental.setComment(request.comment() != null ? request.comment() : "");
 
         for (CreateRentalRequest.Item itemRequest : request.items()) {
@@ -106,13 +117,8 @@ public class RentalService {
                 throw new ConflictException("Актив недоступен: " + asset.getName()
                         + " (" + asset.getInventoryNumber() + ")");
             }
-            // rent: единица тарифа позиции = единице срока аренды (клиент её не задаёт);
-            // rent_to_own: срока нет — единицу шлём в позиции, обязательна
-            TariffUnit itemUnit = kind == RentalKind.RENT ? request.durationUnit() : itemRequest.tariffUnit();
-            if (itemUnit == null) {
-                throw new ConflictException("Укажите единицу тарифа (час/день/неделя/месяц) для позиции: "
-                        + asset.getName() + " (" + asset.getInventoryNumber() + ")");
-            }
+            // единицу тарифа клиент не задаёт: rent — единица срока аренды, rent_to_own — неделя
+            TariffUnit itemUnit = kind == RentalKind.RENT ? request.durationUnit() : TariffUnit.WEEK;
             RentalItem item = new RentalItem();
             item.setRental(rental);
             item.setAsset(asset);
@@ -149,12 +155,18 @@ public class RentalService {
             }
         }
 
+        // график платежей выкупа: N еженедельных платежей от даты начала, первый — в день начала
+        if (kind == RentalKind.RENT_TO_OWN) {
+            RentalSchedule.generate(rental, request.termWeeks(), request.buyoutPrice(), startAt);
+        }
+
         Rental saved = rentalRepository.save(rental);
         recordEvent(saved, RentalEventType.CREATED,
                 kind == RentalKind.RENT
                         ? "Аренда создана (черновик), срок " + request.duration() + " × "
                                 + durationUnitLabel(request.durationUnit())
-                        : "Аренда под выкуп создана (черновик)",
+                        : "Аренда под выкуп создана (черновик), срок " + request.termWeeks()
+                                + " нед., выкуп " + request.buyoutPrice() + " ₽",
                 null, null, author);
         return toResponse(saved, Instant.now());
     }
@@ -162,6 +174,9 @@ public class RentalService {
     /**
      * Приём оплаты по аренде (черновик или активная; платежей может быть несколько).
      * Дату платежа можно указать (по умолчанию — сейчас), счёт обязателен.
+     * Для rent_to_own при переплате менеджер выбирает стратегию: сократить срок (хвост графика
+     * снимается, платёж прежний) или уменьшить следующие платежи (остаток размазывается поровну).
+     * Без стратегии переплата просто гасит ближайшие платежи — клиент может их пропустить.
      */
     @Transactional
     public RentalResponse addPayment(UUID rentalId, PaymentRequest request, User author) {
@@ -169,11 +184,69 @@ public class RentalService {
         if (rental.getStatus() != RentalStatus.DRAFT && rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("По завершённой или отменённой аренде платежи не принимаются");
         }
+        if (request.overpaymentStrategy() != null && rental.getKind() != RentalKind.RENT_TO_OWN) {
+            throw new ConflictException("Стратегия переплаты применима только к аренде под выкуп");
+        }
         Instant date = request.date() != null ? request.date() : Instant.now();
         FinanceTransaction payment = recordRentalTransaction(rental, CategoryKind.INCOME,
                 RENTAL_PAYMENT_CATEGORY, request.amount(), request.accountId(), "Оплата аренды", author, date);
-        recordEvent(rental, RentalEventType.PAYMENT, "Принята оплата; дата: " + fmt(payment.getDate()),
-                request.amount(), payment, author, payment.getDate());
+        String comment = "Принята оплата; дата: " + fmt(payment.getDate());
+        if (rental.getKind() == RentalKind.RENT_TO_OWN) {
+            // покрытие строк графика — FIFO от «оплачено − поглощённая перестройками переплата»;
+            // стратегия переплаты перестраивает хвост (и обновляет absorbed)
+            int paidAfter = financeTransactionRepository.paidSumByRentalId(rental.getId());
+            RentalSchedule.allocate(rental.getScheduleItems(), paidAfter - rental.getScheduleAbsorbed());
+            if (request.overpaymentStrategy() != null) {
+                RentalSchedule.rebuildTail(rental, paidAfter, request.overpaymentStrategy(), date);
+                comment += request.overpaymentStrategy() == OverpaymentStrategy.SHORTEN_TERM
+                        ? "; переплата: срок сокращён"
+                        : "; переплата: следующие платежи уменьшены";
+            }
+            rentalRepository.save(rental);
+        }
+        recordEvent(rental, RentalEventType.PAYMENT, comment, request.amount(), payment, author,
+                payment.getDate());
+        return toResponse(rental, Instant.now());
+    }
+
+    /**
+     * Правка общей суммы выкупа (rent_to_own, черновик/активная): «хвост» графика
+     * пересчитывается равномерно (как reduce_next) — недельный платёж меняется.
+     * Новая сумма не может быть меньше уже оплаченного.
+     */
+    @Transactional
+    public RentalResponse updateBuyoutPrice(UUID rentalId, UpdateRentalRequest request, User author) {
+        Rental rental = findRental(rentalId);
+        if (rental.getKind() != RentalKind.RENT_TO_OWN) {
+            throw new ConflictException("Сумма выкупа есть только у аренды под выкуп");
+        }
+        if (rental.getStatus() != RentalStatus.DRAFT && rental.getStatus() != RentalStatus.ACTIVE) {
+            throw new ConflictException("Сумму выкупа можно менять, пока аренда не закрыта");
+        }
+        int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
+        if (request.buyoutPrice() < paid) {
+            throw new ConflictException("Сумма выкупа меньше уже оплаченного (" + paid + " ₽)");
+        }
+        int oldPrice = rental.getBuyoutPrice();
+        rental.setBuyoutPrice(request.buyoutPrice());
+        if (rental.getStatus() == RentalStatus.DRAFT) {
+            // черновик ещё не начался: график перегенерируем от даты начала целиком,
+            // поглощённое обнуляем (полная перестройка) и заново разносим уже внесённые оплаты
+            rental.getScheduleItems().clear();
+            RentalSchedule.generate(rental, rental.getTermWeeks(), request.buyoutPrice(),
+                    rental.getStartAt());
+            rental.setScheduleAbsorbed(0);
+            RentalSchedule.allocate(rental.getScheduleItems(), paid);
+            rental.setPlannedEndAt(rental.getScheduleItems().isEmpty()
+                    ? rental.getPlannedEndAt()
+                    : rental.getScheduleItems().get(rental.getScheduleItems().size() - 1).getDueDate());
+        } else {
+            RentalSchedule.rebuildTail(rental, paid, OverpaymentStrategy.REDUCE_NEXT, Instant.now());
+        }
+        rentalRepository.save(rental);
+        recordEvent(rental, RentalEventType.SCHEDULE,
+                "Сумма выкупа изменена: " + oldPrice + " ₽ → " + request.buyoutPrice() + " ₽",
+                null, null, author);
         return toResponse(rental, Instant.now());
     }
 
@@ -193,6 +266,12 @@ public class RentalService {
             long periodSeconds = rental.getPlannedEndAt().getEpochSecond() - rental.getStartAt().getEpochSecond();
             rental.setPlannedEndAt(issuedAt.plusSeconds(periodSeconds));
         }
+        // выкуп: график платежей сдвигается вместе с датой начала
+        if (rental.getKind() == RentalKind.RENT_TO_OWN) {
+            long shiftSeconds = issuedAt.getEpochSecond() - rental.getStartAt().getEpochSecond();
+            rental.getScheduleItems()
+                    .forEach(item -> item.setDueDate(item.getDueDate().plusSeconds(shiftSeconds)));
+        }
         rental.setStartAt(issuedAt);
         rental.setStatus(RentalStatus.ACTIVE);
         rental.getItems().forEach(item -> item.getAsset().setStatus(AssetStatus.RENTED));
@@ -207,6 +286,8 @@ public class RentalService {
      * возвращаются (комплект — на технику), статус → «завершена». Денежных операций нет.
      * Дата приёма — опционально (по умолчанию сейчас); строго в календарный день окончания аренды.
      * Завершить можно только при полной оплате (оплачено >= начислено на дату приёма, иначе 409).
+     * Для rent_to_own это «выкуп»: завершение в любой день при полной оплате суммы выкупа,
+     * техника НЕ возвращается в парк — уходит клиенту (статус «выкуплен», весь комплект тоже).
      */
     @Transactional
     public RentalResponse complete(UUID rentalId, CompleteRentalRequest request, User author) {
@@ -214,21 +295,31 @@ public class RentalService {
         if (rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("Завершить можно только выданную аренду");
         }
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
-        assertSameCalendarDay(rental, returnedAt);
+        if (!buyout) {
+            assertSameCalendarDay(rental, returnedAt);
+        }
         assertFullyPaid(rental, returnedAt);
         rental.getItems().stream()
                 .filter(item -> item.getReturnedAt() == null)
                 .forEach(item -> {
                     item.setReturnedAt(returnedAt);
-                    release(item.getAsset());
+                    if (buyout) {
+                        item.getAsset().setStatus(AssetStatus.BOUGHT_OUT);
+                    } else {
+                        release(item.getAsset());
+                    }
                 });
         rental.setStatus(RentalStatus.COMPLETED);
         // конец периода = фактическая дата завершения
         rental.setPlannedEndAt(returnedAt);
         Rental saved = rentalRepository.save(rental);
         recordEvent(saved, RentalEventType.COMPLETED,
-                "Аренда завершена; дата завершения: " + fmt(returnedAt), null, null, author, returnedAt);
+                buyout
+                        ? "Выкуп завершён — техника переходит клиенту; дата завершения: " + fmt(returnedAt)
+                        : "Аренда завершена; дата завершения: " + fmt(returnedAt),
+                null, null, author, returnedAt);
         return toResponse(saved, returnedAt);
     }
 
@@ -238,6 +329,9 @@ public class RentalService {
      * Дата приёма — строго в календарный день ДО дня окончания аренды (в день окончания или позже
      * — это обычное завершение, 409) и не раньше дня начала. Сумма возврата не больше переплаты
      * (оплачено − начислено за фактический срок, 409): вернуть можно только разницу.
+     * Для rent_to_own это «расторжение»: техника возвращается в парк в любой день не раньше
+     * начала, БЕЗ проверки полной оплаты и БЕЗ возврата денег — внесённое не возвращается (409
+     * на попытку рефанда).
      */
     @Transactional
     public RentalResponse earlyReturn(UUID rentalId, ReturnItemRequest request, User author) {
@@ -245,18 +339,28 @@ public class RentalService {
         if (rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("Завершить можно только выданную аренду");
         }
-        if (request != null && request.refundAmount() != null && request.refundAmount() > 0
-                && request.refundAccountId() == null) {
-            throw new ConflictException("Укажите счёт, с которого вернуть деньги");
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
+        if (request != null && request.refundAmount() != null && request.refundAmount() > 0) {
+            if (buyout) {
+                throw new ConflictException(
+                        "По договору под выкуп внесённые платежи не возвращаются");
+            }
+            if (request.refundAccountId() == null) {
+                throw new ConflictException("Укажите счёт, с которого вернуть деньги");
+            }
         }
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
-        assertEarlyReturnDay(rental, returnedAt);
-        assertFullyPaid(rental, returnedAt);
-        int overpaid = financeTransactionRepository.paidSumByRentalId(rental.getId())
-                - RentalAmounts.accruedActual(rental, returnedAt);
-        if (request != null && request.refundAmount() != null && request.refundAmount() > overpaid) {
-            throw new ConflictException("Сумма возврата не может быть больше переплаты ("
-                    + overpaid + " ₽)");
+        if (buyout) {
+            assertNotBeforeStart(rental, returnedAt);
+        } else {
+            assertEarlyReturnDay(rental, returnedAt);
+            assertFullyPaid(rental, returnedAt);
+            int overpaid = financeTransactionRepository.paidSumByRentalId(rental.getId())
+                    - RentalAmounts.accruedActual(rental, returnedAt);
+            if (request != null && request.refundAmount() != null && request.refundAmount() > overpaid) {
+                throw new ConflictException("Сумма возврата не может быть больше переплаты ("
+                        + overpaid + " ₽)");
+            }
         }
         rental.getItems().stream()
                 .filter(item -> item.getReturnedAt() == null)
@@ -278,17 +382,24 @@ public class RentalService {
                     request.refundAmount(), refund, author, returnedAt);
         }
         recordEvent(saved, RentalEventType.COMPLETED,
-                "Аренда завершена досрочно; дата завершения: " + fmt(returnedAt),
+                buyout
+                        ? "Договор выкупа расторгнут, техника возвращена (платежи не возвращаются); "
+                                + "дата завершения: " + fmt(returnedAt)
+                        : "Аренда завершена досрочно; дата завершения: " + fmt(returnedAt),
                 null, null, author, returnedAt);
         return toResponse(saved, returnedAt);
     }
 
-    /** Возврат одной позиции (опционально — с возвратом денег). Все позиции возвращены → аренда завершена. */
+    /** Возврат одной позиции (опционально — с возвратом денег). Все позиции возвращены → аренда завершена.
+     *  Для rent_to_own недоступен: выкуп завершается/расторгается только целиком (409). */
     @Transactional
     public RentalResponse returnItem(UUID rentalId, UUID itemId, ReturnItemRequest request, User author) {
         Rental rental = findRental(rentalId);
         if (rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("Аренда уже завершена");
+        }
+        if (rental.getKind() == RentalKind.RENT_TO_OWN) {
+            throw new ConflictException("Позиции договора выкупа возвращаются только целиком");
         }
         RentalItem item = rental.getItems().stream()
                 .filter(i -> i.getId().equals(itemId))
@@ -401,6 +512,10 @@ public class RentalService {
         Rental rental = findRental(rentalId);
         if (rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("Продлить можно только активную аренду");
+        }
+        if (rental.getKind() == RentalKind.RENT_TO_OWN) {
+            throw new ConflictException(
+                    "Продление недоступно для аренды под выкуп — срок задаёт график платежей");
         }
         if (rental.getPlannedEndAt() == null) {
             throw new ConflictException("Продление доступно только для аренды с фиксированным сроком");
@@ -566,11 +681,11 @@ public class RentalService {
     /**
      * Досрочный возврат — только в календарные дни ДО дня окончания аренды и НЕ РАНЬШЕ
      * дня начала (локальная дата сервера). В день окончания или позже — это обычное
-     * завершение (complete).
+     * завершение (complete). Только для rent; rent_to_own сюда не доходит (своя ветка).
      */
     private void assertEarlyReturnDay(Rental rental, Instant returnedAt) {
         if (rental.getPlannedEndAt() == null) {
-            return; // rent_to_own — без фиксированного конца
+            return;
         }
         ZoneId zone = ZoneId.systemDefault();
         LocalDate endDay = rental.getPlannedEndAt().atZone(zone).toLocalDate();
@@ -580,7 +695,14 @@ public class RentalService {
                     + "или позже оформляется обычным завершением. Досрочный возврат возможен "
                     + "только в календарные дни до дня окончания аренды");
         }
+        assertNotBeforeStart(rental, returnedAt);
+    }
+
+    /** Дата приёма не раньше календарного дня начала аренды (локальная дата сервера). */
+    private void assertNotBeforeStart(Rental rental, Instant returnedAt) {
+        ZoneId zone = ZoneId.systemDefault();
         LocalDate startDay = rental.getStartAt().atZone(zone).toLocalDate();
+        LocalDate returnDay = returnedAt.atZone(zone).toLocalDate();
         if (returnDay.isBefore(startDay)) {
             throw new ConflictException("Дата приёма раньше дня начала аренды");
         }
@@ -604,10 +726,11 @@ public class RentalService {
     /**
      * Обычное завершение — только в календарный день окончания аренды (локальная дата сервера).
      * Позже: считаем доплату и отправляем продлевать; раньше: это сценарий досрочного возврата.
+     * Только для rent; rent_to_own завершается в любой день при полной оплате.
      */
     private void assertSameCalendarDay(Rental rental, Instant returnedAt) {
         if (rental.getPlannedEndAt() == null) {
-            return; // rent_to_own — без фиксированного конца
+            return;
         }
         ZoneId zone = ZoneId.systemDefault();
         LocalDate endDay = rental.getPlannedEndAt().atZone(zone).toLocalDate();

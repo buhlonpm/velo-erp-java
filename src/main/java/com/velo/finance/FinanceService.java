@@ -17,7 +17,9 @@ import com.velo.rental.Rental;
 import com.velo.rental.RentalEvent;
 import com.velo.rental.RentalEventRepository;
 import com.velo.rental.RentalEventType;
+import com.velo.rental.RentalKind;
 import com.velo.rental.RentalRepository;
+import com.velo.rental.RentalSchedule;
 import com.velo.rental.RentalStatus;
 import com.velo.user.User;
 import lombok.RequiredArgsConstructor;
@@ -177,7 +179,9 @@ public class FinanceService {
                     .orElseThrow(() -> new NotFoundException("Актив не найден"));
             transaction.setAsset(asset);
         }
-        return TransactionResponse.from(transactionRepository.save(transaction));
+        FinanceTransaction saved = transactionRepository.save(transaction);
+        reallocateBuyoutSchedule(saved);
+        return TransactionResponse.from(saved);
     }
 
     /**
@@ -221,6 +225,7 @@ public class FinanceService {
         }
         TransactionResponse response = TransactionResponse.from(transactionRepository.save(transaction));
         recordChangeEvent(transaction, oldAmount, oldDate, author);
+        reallocateBuyoutSchedule(transaction);
         return response;
     }
 
@@ -301,6 +306,23 @@ public class FinanceService {
         recordDeleteEvent(transaction, author);
         rentalEventRepository.clearTransactionReference(id);
         transactionRepository.delete(transaction);
+        reallocateBuyoutSchedule(transaction);
+    }
+
+    /**
+     * Переразнести покрытие графика платежей выкупа после приёма/правки/удаления оплаты
+     * (FIFO от «оплачено − поглощённая перестройками переплата»). Сделанные перестроения
+     * графика (стратегии переплаты, скидка) при этом НЕ откатываются — покрытие просто
+     * заново разносится по текущим строкам.
+     */
+    private void reallocateBuyoutSchedule(FinanceTransaction transaction) {
+        Rental rental = transaction.getRental();
+        if (rental == null || rental.getKind() != RentalKind.RENT_TO_OWN
+                || rental.getScheduleItems().isEmpty()) {
+            return;
+        }
+        RentalSchedule.allocate(rental.getScheduleItems(),
+                transactionRepository.paidSumByRentalId(rental.getId()) - rental.getScheduleAbsorbed());
     }
 
     /** Событие в ленту аренды при удалении оплаты/возврата — иначе факт удаления теряется. */

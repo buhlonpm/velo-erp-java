@@ -1,0 +1,1 @@
+ALTER TABLE rentals ADD COLUMN schedule_absorbed INT NOT NULL DEFAULT 0;

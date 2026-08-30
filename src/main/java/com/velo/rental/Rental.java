@@ -60,6 +60,21 @@ public class Rental {
     @Column(name = "buyout_price")
     private Integer buyoutPrice;
 
+    /** Срок выкупа в неделях (13/26/52) — только rent_to_own. */
+    @Column(name = "term_weeks")
+    private Integer termWeeks;
+
+    /** Переплата, поглощённая перестройками графика (rent_to_own). FIFO-разнесение идёт
+     *  от «оплачено − absorbed», иначе поглощённые деньги повторно гасят новые строки
+     *  (график показывал «всё оплачено» до полной выплаты суммы выкупа). */
+    @Column(name = "schedule_absorbed", nullable = false)
+    private int scheduleAbsorbed = 0;
+
+    /** График платежей (rent_to_own): плановые даты и суммы; покрытие строк хранится. */
+    @OneToMany(mappedBy = "rental", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("seq ASC")
+    private List<RentalScheduleItem> scheduleItems = new ArrayList<>();
+
     @Column(nullable = false, columnDefinition = "TEXT")
     private String comment = "";
 
@@ -75,10 +90,16 @@ public class Rental {
         createdAt = Instant.now();
     }
 
-    /** Вычисляемый статус для отображения: просроченная активная аренда. */
+    /** Вычисляемый статус для отображения: просроченная активная аренда.
+     *  У выкупа просрочка — по графику платежей (хранимое покрытие), у аренды — по концу срока. */
     public String displayStatus(Instant now) {
-        if (status == RentalStatus.ACTIVE && plannedEndAt != null && plannedEndAt.isBefore(now)) {
-            return "overdue";
+        if (status == RentalStatus.ACTIVE) {
+            boolean overdue = kind == RentalKind.RENT_TO_OWN
+                    ? RentalSchedule.isOverdue(scheduleItems, now)
+                    : plannedEndAt != null && plannedEndAt.isBefore(now);
+            if (overdue) {
+                return "overdue";
+            }
         }
         return switch (status) {
             case DRAFT -> "draft";

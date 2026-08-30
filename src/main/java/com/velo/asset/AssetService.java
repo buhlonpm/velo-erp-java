@@ -237,7 +237,8 @@ public class AssetService {
     @Transactional
     public AssetResponse installTracker(UUID assetId, UUID trackerId, User author) {
         BikeAsset bike = findBike(assetId);
-        if (bike.getStatus() == AssetStatus.SOLD || bike.getStatus() == AssetStatus.DECOMMISSIONED) {
+        if (bike.getStatus() == AssetStatus.SOLD || bike.getStatus() == AssetStatus.DECOMMISSIONED
+                || bike.getStatus() == AssetStatus.BOUGHT_OUT) {
             throw new ConflictException("Велосипед выбыл — трекер установить нельзя");
         }
         if (bike.getGpsTracker() != null) {
@@ -370,7 +371,8 @@ public class AssetService {
         if (asset.getStatus() == AssetStatus.RENTED) {
             throw new ConflictException("Актив в аренде — сначала завершите аренду");
         }
-        if (asset.getStatus() == AssetStatus.SOLD || asset.getStatus() == AssetStatus.DECOMMISSIONED) {
+        if (asset.getStatus() == AssetStatus.SOLD || asset.getStatus() == AssetStatus.DECOMMISSIONED
+                || asset.getStatus() == AssetStatus.BOUGHT_OUT) {
             throw new ConflictException("Актив уже выбыл");
         }
 

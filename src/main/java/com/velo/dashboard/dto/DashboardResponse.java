@@ -35,7 +35,9 @@ public record DashboardResponse(
             /** Начислено на текущий момент (для выкупа — цена выкупа). */
             int amount,
             /** Статус для отображения (active/overdue/draft/…). */
-            String status
+            String status,
+            /** Ближайший непогашенный платёж по графику (rent_to_own); null — rent или всё оплачено. */
+            Instant nextPaymentDue
     ) {
     }
 }

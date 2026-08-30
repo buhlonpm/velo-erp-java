@@ -19,13 +19,15 @@ public record CreateRentalRequest(
         /** Срок аренды: plannedEndAt = startAt + duration × durationUnit, считает сервер (rent). */
         @Min(1) Integer duration,
         TariffUnit durationUnit,
-        @Min(0) Integer buyoutPrice,
+        @Min(1) Integer buyoutPrice,
+        /** Срок выкупа в неделях: 13, 26 или 52 (rent_to_own, обязателен). */
+        Integer termWeeks,
         @Size(max = 2000) String comment,
         @NotEmpty List<@Valid Item> items
 ) {
     public record Item(
             @NotNull UUID assetId,
-            /** Единица тарифа. rent: игнорируется — сервер ставит durationUnit аренды. rent_to_own: обязательна (409). */
+            /** Единица тарифа. Игнорируется: сервер ставит durationUnit аренды (rent) или week (rent_to_own). */
             TariffUnit tariffUnit,
             /** Цена за единицу; не передана — 0. В справочник модели НЕ сохраняется. */
             @Min(0) Integer rate

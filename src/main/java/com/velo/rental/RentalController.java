@@ -9,6 +9,7 @@ import com.velo.rental.dto.PaymentRequest;
 import com.velo.rental.dto.RentalEventResponse;
 import com.velo.rental.dto.RentalResponse;
 import com.velo.rental.dto.ReturnItemRequest;
+import com.velo.rental.dto.UpdateRentalRequest;
 import com.velo.user.User;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -55,6 +56,14 @@ public class RentalController {
     public ResponseEntity<RentalResponse> create(@Valid @RequestBody CreateRentalRequest request,
                                                  @AuthenticationPrincipal User author) {
         return ResponseEntity.status(HttpStatus.CREATED).body(rentalService.create(request, author));
+    }
+
+    /** Правка суммы выкупа (только rent_to_own, черновик/активная) — график пересчитывается. */
+    @PatchMapping("/{id}")
+    public RentalResponse update(@PathVariable UUID id,
+                                 @Valid @RequestBody UpdateRentalRequest request,
+                                 @AuthenticationPrincipal User author) {
+        return rentalService.updateBuyoutPrice(id, request, author);
     }
 
     @PostMapping("/{id}/payments")
