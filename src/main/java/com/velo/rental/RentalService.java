@@ -33,8 +33,10 @@ import org.hibernate.Hibernate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -138,7 +140,8 @@ public class RentalService {
                 RentalItem child = new RentalItem();
                 child.setRental(rental);
                 child.setAsset(kitAsset);
-                child.setTariffUnit(TariffUnit.HOUR);
+                // комплект едет по тарифу 0, единица — как у родительской позиции (велосипеда)
+                child.setTariffUnit(parent.getTariffUnit());
                 child.setRate(0);
                 child.setParentItem(parent);
                 rental.getItems().add(child);
@@ -169,7 +172,8 @@ public class RentalService {
         Instant date = request.date() != null ? request.date() : Instant.now();
         FinanceTransaction payment = recordRentalTransaction(rental, CategoryKind.INCOME,
                 RENTAL_PAYMENT_CATEGORY, request.amount(), request.accountId(), "Оплата аренды", author, date);
-        recordEvent(rental, RentalEventType.PAYMENT, "Принята оплата", request.amount(), payment, author);
+        recordEvent(rental, RentalEventType.PAYMENT, "Принята оплата; дата: " + fmt(payment.getDate()),
+                request.amount(), payment, author, payment.getDate());
         return toResponse(rental, Instant.now());
     }
 
@@ -193,14 +197,15 @@ public class RentalService {
         rental.setStatus(RentalStatus.ACTIVE);
         rental.getItems().forEach(item -> item.getAsset().setStatus(AssetStatus.RENTED));
         Rental saved = rentalRepository.save(rental);
-        recordEvent(saved, RentalEventType.ISSUED, "Аренда выдана", null, null, author);
+        recordEvent(saved, RentalEventType.ISSUED, "Аренда выдана; дата: " + fmt(issuedAt),
+                null, null, author, issuedAt);
         return toResponse(saved, Instant.now());
     }
 
     /**
      * Обычное завершение активной аренды (основной путь): все невозвращённые позиции
      * возвращаются (комплект — на технику), статус → «завершена». Денежных операций нет.
-     * Дата приёма — опционально (по умолчанию сейчас); не дальше ±24 часов от конца аренды.
+     * Дата приёма — опционально (по умолчанию сейчас); строго в календарный день окончания аренды.
      * Завершить можно только при полной оплате (оплачено >= начислено на дату приёма, иначе 409).
      */
     @Transactional
@@ -210,11 +215,7 @@ public class RentalService {
             throw new ConflictException("Завершить можно только выданную аренду");
         }
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
-        if (rental.getPlannedEndAt() != null
-                && Duration.between(rental.getPlannedEndAt(), returnedAt).abs().compareTo(Duration.ofHours(24)) > 0) {
-            throw new ConflictException(
-                    "Дата приёма отличается от даты окончания аренды больше чем на 24 часа");
-        }
+        assertSameCalendarDay(rental, returnedAt);
         assertFullyPaid(rental, returnedAt);
         rental.getItems().stream()
                 .filter(item -> item.getReturnedAt() == null)
@@ -223,17 +224,19 @@ public class RentalService {
                     release(item.getAsset());
                 });
         rental.setStatus(RentalStatus.COMPLETED);
+        // конец периода = фактическая дата завершения
+        rental.setPlannedEndAt(returnedAt);
         Rental saved = rentalRepository.save(rental);
         recordEvent(saved, RentalEventType.COMPLETED,
-                "Аренда завершена: все позиции возвращены", null, null, author);
+                "Аренда завершена; дата завершения: " + fmt(returnedAt), null, null, author, returnedAt);
         return toResponse(saved, returnedAt);
     }
 
     /**
      * Досрочный возврат (редкий путь — клиент вернул раньше и просит деньги):
      * статус ВСЕГДА «завершена досрочно», все позиции возвращаются. Только при полной оплате (409).
-     * Опционально — дата приёма (без ограничения ±24 ч: возврат по определению раньше конца)
-     * и возврат денег клиенту (расходная операция + событие).
+     * Дата приёма — строго в календарный день ДО дня окончания аренды (в день окончания или позже
+     * — это обычное завершение, 409). Сумма возврата не больше начисленной суммы аренды (409).
      */
     @Transactional
     public RentalResponse earlyReturn(UUID rentalId, ReturnItemRequest request, User author) {
@@ -246,7 +249,13 @@ public class RentalService {
             throw new ConflictException("Укажите счёт, с которого вернуть деньги");
         }
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        assertEarlyReturnDay(rental, returnedAt);
         assertFullyPaid(rental, returnedAt);
+        int amount = rentalAmount(rental, returnedAt);
+        if (request != null && request.refundAmount() != null && request.refundAmount() > amount) {
+            throw new ConflictException("Сумма возврата не может быть больше суммы аренды ("
+                    + amount + " ₽)");
+        }
         rental.getItems().stream()
                 .filter(item -> item.getReturnedAt() == null)
                 .forEach(item -> {
@@ -254,6 +263,8 @@ public class RentalService {
                     release(item.getAsset());
                 });
         rental.setStatus(RentalStatus.COMPLETED_EARLY);
+        // конец периода = фактическая дата завершения
+        rental.setPlannedEndAt(returnedAt);
         Rental saved = rentalRepository.save(rental);
 
         if (request != null && request.refundAmount() != null && request.refundAmount() > 0) {
@@ -261,10 +272,12 @@ public class RentalService {
                     RENTAL_REFUND_CATEGORY, request.refundAmount(), request.refundAccountId(),
                     "Возврат денег клиенту по аренде", author, returnedAt);
             recordEvent(saved, RentalEventType.REFUND,
-                    "Возврат денег клиенту", request.refundAmount(), refund, author);
+                    "Возврат денег клиенту; дата: " + fmt(returnedAt),
+                    request.refundAmount(), refund, author, returnedAt);
         }
         recordEvent(saved, RentalEventType.COMPLETED,
-                "Аренда завершена досрочно: все позиции возвращены", null, null, author);
+                "Аренда завершена досрочно; дата завершения: " + fmt(returnedAt),
+                null, null, author, returnedAt);
         return toResponse(saved, returnedAt);
     }
 
@@ -291,8 +304,9 @@ public class RentalService {
         item.setReturnedAt(now);
         release(item.getAsset());
         recordEvent(rental, RentalEventType.ITEM_RETURN,
-                "Возврат: " + item.getAsset().getName() + " (" + item.getAsset().getInventoryNumber() + ")",
-                null, null, author);
+                "Возврат: " + item.getAsset().getName() + " (" + item.getAsset().getInventoryNumber()
+                        + "); дата: " + fmt(now),
+                null, null, author, now);
 
         // вернули родителя — возвращаются и дочерние позиции комплекта
         if (item.getParentItem() == null) {
@@ -305,8 +319,8 @@ public class RentalService {
                         release(child.getAsset());
                         recordEvent(rental, RentalEventType.ITEM_RETURN,
                                 "Возврат (комплект): " + child.getAsset().getName()
-                                        + " (" + child.getAsset().getInventoryNumber() + ")",
-                                null, null, author);
+                                        + " (" + child.getAsset().getInventoryNumber() + "); дата: " + fmt(now),
+                                null, null, author, now);
                     });
         }
 
@@ -316,7 +330,7 @@ public class RentalService {
                     RENTAL_REFUND_CATEGORY, request.refundAmount(), request.refundAccountId(),
                     "Возврат денег клиенту по аренде", author);
             recordEvent(rental, RentalEventType.REFUND,
-                    "Возврат денег клиенту", request.refundAmount(), refund, author);
+                    "Возврат денег клиенту; дата: " + fmt(now), request.refundAmount(), refund, author, now);
         }
 
         boolean allReturned = rental.getItems().stream().allMatch(i -> i.getReturnedAt() != null);
@@ -520,16 +534,86 @@ public class RentalService {
         return RentalResponse.from(rental, now, paidAmount, refundedAmount, extensions);
     }
 
+    /** Формат даты для текстов событий ленты (локальная зона сервера). */
+    private static String fmt(Instant instant) {
+        return DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                .withZone(ZoneId.systemDefault())
+                .format(instant);
+    }
+
+    /**
+     * Досрочный возврат — только в календарные дни ДО дня окончания аренды и НЕ РАНЬШЕ
+     * дня начала (локальная дата сервера). В день окончания или позже — это обычное
+     * завершение (complete).
+     */
+    private void assertEarlyReturnDay(Rental rental, Instant returnedAt) {
+        if (rental.getPlannedEndAt() == null) {
+            return; // rent_to_own — без фиксированного конца
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate endDay = rental.getPlannedEndAt().atZone(zone).toLocalDate();
+        LocalDate returnDay = returnedAt.atZone(zone).toLocalDate();
+        if (!returnDay.isBefore(endDay)) {
+            throw new ConflictException("Это не досрочный возврат: возврат в день окончания аренды "
+                    + "или позже оформляется обычным завершением. Досрочный возврат возможен "
+                    + "только в календарные дни до дня окончания аренды");
+        }
+        LocalDate startDay = rental.getStartAt().atZone(zone).toLocalDate();
+        if (returnDay.isBefore(startDay)) {
+            throw new ConflictException("Дата приёма раньше дня начала аренды");
+        }
+    }
+
     /** Завершение (обычное и досрочное) — только при полной оплате: оплачено >= начислено на дату приёма. */
     private void assertFullyPaid(Rental rental, Instant at) {
-        int amount = rental.getKind() == RentalKind.RENT_TO_OWN
-                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
-                : rental.getItems().stream().mapToInt(item -> item.amount(at)).sum();
+        int amount = rentalAmount(rental, at);
         int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
         if (paid < amount) {
             throw new ConflictException(
                     "Аренда не оплачена полностью: не хватает " + (amount - paid) + " ₽");
         }
+    }
+
+    /** Начислено по аренде на момент at (rent — позиции по тарифу, rent_to_own — цена выкупа). */
+    private static int rentalAmount(Rental rental, Instant at) {
+        return rental.getKind() == RentalKind.RENT_TO_OWN
+                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
+                : rental.getItems().stream().mapToInt(item -> item.amount(at)).sum();
+    }
+
+    /**
+     * Обычное завершение — только в календарный день окончания аренды (локальная дата сервера).
+     * Позже: считаем доплату и отправляем продлевать; раньше: это сценарий досрочного возврата.
+     */
+    private void assertSameCalendarDay(Rental rental, Instant returnedAt) {
+        if (rental.getPlannedEndAt() == null) {
+            return; // rent_to_own — без фиксированного конца
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate endDay = rental.getPlannedEndAt().atZone(zone).toLocalDate();
+        LocalDate returnDay = returnedAt.atZone(zone).toLocalDate();
+        if (returnDay.equals(endDay)) {
+            return;
+        }
+        if (returnDay.isBefore(endDay)) {
+            throw new ConflictException("Дата приёма раньше дня окончания аренды. Если клиент вернул "
+                    + "технику раньше и просит деньги — оформите «Вернуть досрочно»");
+        }
+        int extra = rentalAmount(rental, returnedAt) - rentalAmount(rental, rental.getPlannedEndAt());
+        String suggestion = rental.getItems().stream()
+                .filter(item -> item.getParentItem() == null)
+                .findFirst()
+                .map(item -> {
+                    long gapSeconds = Math.max(1,
+                            returnedAt.getEpochSecond() - rental.getPlannedEndAt().getEpochSecond());
+                    long unitSeconds = item.getTariffUnit().getSeconds();
+                    long units = (gapSeconds + unitSeconds - 1) / unitSeconds;
+                    return " Продлите аренду на " + units + " × "
+                            + durationUnitLabel(item.getTariffUnit()) + ",";
+                })
+                .orElse("");
+        throw new ConflictException("Возврат позже дня окончания аренды: доплата " + extra + " ₽."
+                + suggestion + " примите доплату — после этого аренду можно завершить");
     }
 
     /** Приходная/расходная операция по аренде (оплата, продление, возврат денег). */
@@ -582,10 +666,17 @@ public class RentalService {
 
     private void recordEvent(Rental rental, RentalEventType type, String comment, Integer amount,
                              FinanceTransaction transaction, User author) {
+        recordEvent(rental, type, comment, amount, transaction, author, null);
+    }
+
+    /** Событие ленты: date — фактический момент записи, docDate — дата «по документам». */
+    private void recordEvent(Rental rental, RentalEventType type, String comment, Integer amount,
+                             FinanceTransaction transaction, User author, Instant docDate) {
         RentalEvent event = new RentalEvent();
         event.setRental(rental);
         event.setType(type);
         event.setDate(Instant.now());
+        event.setDocDate(docDate);
         event.setComment(comment);
         event.setAmount(amount);
         event.setTransaction(transaction);

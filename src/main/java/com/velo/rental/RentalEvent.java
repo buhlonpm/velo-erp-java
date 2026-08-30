@@ -45,6 +45,10 @@ public class RentalEvent {
     @Column(nullable = false)
     private Instant date;
 
+    /** Дата «по документам»: дата оплаты/возврата из операции, дата выдачи, дата приёма. Null — когда неприменимо. */
+    @Column(name = "doc_date")
+    private Instant docDate;
+
     @Column(nullable = false, columnDefinition = "TEXT")
     private String comment = "";
 

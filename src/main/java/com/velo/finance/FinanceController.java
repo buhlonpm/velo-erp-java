@@ -115,14 +115,16 @@ public class FinanceController {
     @PatchMapping("/transactions/{id}")
     @PreAuthorize(CAN_VIEW_FINANCES)
     public TransactionResponse updateTransaction(@PathVariable UUID id,
-                                                 @Valid @RequestBody UpdateTransactionRequest request) {
-        return financeService.updateTransaction(id, request);
+                                                 @Valid @RequestBody UpdateTransactionRequest request,
+                                                 @AuthenticationPrincipal User author) {
+        return financeService.updateTransaction(id, request, author);
     }
 
     @DeleteMapping("/transactions/{id}")
     @PreAuthorize(CAN_VIEW_FINANCES)
-    public ResponseEntity<Void> deleteTransaction(@PathVariable UUID id) {
-        financeService.deleteTransaction(id);
+    public ResponseEntity<Void> deleteTransaction(@PathVariable UUID id,
+                                                  @AuthenticationPrincipal User author) {
+        financeService.deleteTransaction(id, author);
         return ResponseEntity.noContent().build();
     }
 }

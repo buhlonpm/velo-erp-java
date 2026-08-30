@@ -66,21 +66,21 @@ class RentalKitTest {
 
         // аренда только с велосипедом — АКБ и зарядник подтягиваются автоматом дочерними позициями
         String rentalBody = postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customer + "\",\"duration\":3,\"durationUnit\":\"hour\","
-                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300,\"tariffUnit\":\"hour\"}]}")
+                        "{\"customerId\":\"" + customer + "\",\"duration\":3,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":300}]}")
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.items.length()").value(3))
                 .andReturn().getResponse().getContentAsString();
         String rentalId = extract(rentalBody, "id");
 
-        // дочерние позиции: АКБ и зарядник, тариф 0, parentItemId = позиция велосипеда
+        // дочерние позиции: АКБ и зарядник, тариф 0, единица тарифа — как у велосипеда (день, не час)
         mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[?(@.parentItemId == null && @.assetId == '" + bike + "')]").exists())
                 .andExpect(jsonPath("$.items[?(@.parentItemId != null && @.assetId == '" + battery
-                        + "' && @.rate == 0)]").exists())
+                        + "' && @.rate == 0 && @.tariffUnit == 'day')]").exists())
                 .andExpect(jsonPath("$.items[?(@.parentItemId != null && @.assetId == '" + charger
-                        + "' && @.rate == 0)]").exists());
+                        + "' && @.rate == 0 && @.tariffUnit == 'day')]").exists());
 
         // все три актива в резерве (черновик), после выдачи — в аренде
         mvc.perform(get("/api/assets?status=reserved").header("Authorization", "Bearer " + admin))

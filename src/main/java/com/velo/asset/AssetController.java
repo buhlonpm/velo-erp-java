@@ -9,6 +9,7 @@ import com.velo.asset.dto.MileageLogEntry;
 import com.velo.asset.dto.RecordChargeCyclesRequest;
 import com.velo.asset.dto.RecordMileageRequest;
 import com.velo.asset.dto.UpdateAssetRequest;
+import com.velo.asset.dto.UpdateMileageRequest;
 import com.velo.asset.dto.WriteOffAssetRequest;
 import com.velo.user.User;
 import jakarta.validation.Valid;
@@ -54,23 +55,27 @@ public class AssetController {
     }
 
     @PostMapping("/{id}/tracker/{trackerId}")
-    public AssetResponse installTracker(@PathVariable UUID id, @PathVariable UUID trackerId) {
-        return assetService.installTracker(id, trackerId);
+    public AssetResponse installTracker(@PathVariable UUID id, @PathVariable UUID trackerId,
+                                        @AuthenticationPrincipal User author) {
+        return assetService.installTracker(id, trackerId, author);
     }
 
     @DeleteMapping("/{id}/tracker")
-    public AssetResponse removeTracker(@PathVariable UUID id) {
-        return assetService.removeTracker(id);
+    public AssetResponse removeTracker(@PathVariable UUID id,
+                                       @AuthenticationPrincipal User author) {
+        return assetService.removeTracker(id, author);
     }
 
     @PostMapping("/{assetId}/mount/{bikeId}")
-    public AssetResponse mountOnBike(@PathVariable UUID assetId, @PathVariable UUID bikeId) {
-        return assetService.mountOnBike(assetId, bikeId);
+    public AssetResponse mountOnBike(@PathVariable UUID assetId, @PathVariable UUID bikeId,
+                                     @AuthenticationPrincipal User author) {
+        return assetService.mountOnBike(assetId, bikeId, author);
     }
 
     @DeleteMapping("/{assetId}/mount")
-    public AssetResponse unmountFromBike(@PathVariable UUID assetId) {
-        return assetService.unmountFromBike(assetId);
+    public AssetResponse unmountFromBike(@PathVariable UUID assetId,
+                                         @AuthenticationPrincipal User author) {
+        return assetService.unmountFromBike(assetId, author);
     }
 
     @PostMapping("/{id}/write-off")
@@ -87,8 +92,9 @@ public class AssetController {
 
     @PostMapping("/{id}/mileage")
     public ResponseEntity<MileageLogEntry> recordMileage(@PathVariable UUID id,
-                                                         @Valid @RequestBody RecordMileageRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(assetService.recordMileage(id, request));
+                                                         @Valid @RequestBody RecordMileageRequest request,
+                                                         @AuthenticationPrincipal User author) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(assetService.recordMileage(id, request, author));
     }
 
     @GetMapping("/{id}/mileage")
@@ -96,10 +102,25 @@ public class AssetController {
         return assetService.mileageLog(id);
     }
 
+    @PatchMapping("/{id}/mileage/{logId}")
+    public MileageLogEntry updateMileageEntry(@PathVariable UUID id, @PathVariable UUID logId,
+                                              @Valid @RequestBody UpdateMileageRequest request,
+                                              @AuthenticationPrincipal User author) {
+        return assetService.updateMileageEntry(id, logId, request, author);
+    }
+
+    @DeleteMapping("/{id}/mileage/{logId}")
+    public ResponseEntity<Void> deleteMileageEntry(@PathVariable UUID id, @PathVariable UUID logId,
+                                                   @AuthenticationPrincipal User author) {
+        assetService.deleteMileageEntry(id, logId, author);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/{id}/charge-cycles")
     public ResponseEntity<ChargeCycleLogEntry> recordChargeCycles(@PathVariable UUID id,
-                                                                  @Valid @RequestBody RecordChargeCyclesRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(assetService.recordChargeCycles(id, request));
+                                                                  @Valid @RequestBody RecordChargeCyclesRequest request,
+                                                                  @AuthenticationPrincipal User author) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(assetService.recordChargeCycles(id, request, author));
     }
 
     @GetMapping("/{id}/charge-cycles")

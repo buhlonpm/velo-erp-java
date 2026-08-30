@@ -9,6 +9,8 @@ public record RentalEventResponse(
         UUID id,
         String type,
         Instant date,
+        /** Дата «по документам» (дата оплаты/выдачи/приёма), может отличаться от фактической. */
+        Instant docDate,
         String comment,
         Integer amount,
         UUID transactionId,
@@ -24,6 +26,7 @@ public record RentalEventResponse(
                 event.getId(),
                 event.getType().getValue(),
                 event.getDate(),
+                event.getDocDate(),
                 event.getComment(),
                 event.getAmount(),
                 event.getTransaction() != null ? event.getTransaction().getId() : null,

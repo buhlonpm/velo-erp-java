@@ -13,11 +13,14 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -70,6 +73,26 @@ class BundledAssetTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.type == 'purchase')]").exists())
                 .andExpect(jsonPath("$[?(@.type == 'mount')]").exists());
+
+        // покупка комплектного актива не редактируется: дата/цена — 409
+        mvc.perform(patch("/api/assets/" + battery)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purchasePrice\":3000}"))
+                .andExpect(status().isConflict());
+        mvc.perform(patch("/api/assets/" + battery)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purchasedAt\":\"2024-05-01T10:00:00Z\"}"))
+                .andExpect(status().isConflict());
+        // остальные поля править можно
+        mvc.perform(patch("/api/assets/" + battery)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Комплектная АКБ\",\"voltage\":48}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Комплектная АКБ"))
+                .andExpect(jsonPath("$.purchasePrice").value(0));
     }
 
     @Test
@@ -161,6 +184,51 @@ class BundledAssetTest {
                         .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-BND8\","
                                 + "\"purchasePrice\":50000,\"purchasedAt\":\"2024-03-15T10:00:00Z\"}"))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void futurePurchaseDateRejected() throws Exception {
+        String admin = login();
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        String future = Instant.now().plus(1, ChronoUnit.DAYS).toString();
+
+        // создание актива с датой покупки в будущем — 400
+        mvc.perform(post("/api/assets")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"bike\",\"inventoryNumber\":\"VIN-FUT1\","
+                                + "\"purchasePrice\":50000,\"purchaseAccountId\":\"" + account
+                                + "\",\"purchasedAt\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Дата покупки не может быть в будущем"));
+
+        // правка даты покупки на будущее — 400
+        String bike = createBike(admin, "VIN-FUT2");
+        mvc.perform(patch("/api/assets/" + bike)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purchasedAt\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
+
+        // трекер с датой покупки в будущем — 400
+        mvc.perform(post("/api/gps-trackers")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"FUT-T1\",\"purchasePrice\":3000,"
+                                + "\"purchaseAccountId\":\"" + account
+                                + "\",\"purchasedAt\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
+
+        // симка с датой покупки в будущем — 400
+        mvc.perform(post("/api/sim-cards")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"phoneNumber\":\"+7 900 111-22-33\",\"operator\":\"МТС\","
+                                + "\"purchasePrice\":300,\"purchaseAccountId\":\"" + account
+                                + "\",\"purchasedAt\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     private String createBike(String token, String vin) throws Exception {

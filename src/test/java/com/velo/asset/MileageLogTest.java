@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -172,6 +173,78 @@ class MileageLogTest {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    void mileageEntryEditAndDelete() throws Exception {
+        String admin = login();
+        String accountId = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(createAsset(admin,
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-ME1\",\"purchasePrice\":500,"
+                                + "\"purchaseAccountId\":\"" + accountId
+                                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+
+        String weekAgo = Instant.now().minus(7, ChronoUnit.DAYS).toString();
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        recordMileage(admin, bike, "{\"mileageKm\":1000,\"recordedAt\":\"" + weekAgo + "\"}")
+                .andExpect(status().isCreated());
+        recordMileage(admin, bike, "{\"mileageKm\":1200,\"recordedAt\":\"" + yesterday + "\"}")
+                .andExpect(status().isCreated());
+        recordMileage(admin, bike, "{\"mileageKm\":1500}").andExpect(status().isCreated());
+
+        // журнал: новые сверху — [1500, 1200, 1000]
+        String log = mvc.perform(get("/api/assets/" + bike + "/mileage")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString();
+        String latestId = extract(log, "id", 0);
+        String middleId = extract(log, "id", 1);
+
+        // правка средней записи в рамках соседей — ок + событие в ленту
+        mvc.perform(patch("/api/assets/" + bike + "/mileage/" + middleId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"mileageKm\":1250}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mileageKm").value(1250));
+        mvc.perform(get("/api/assets/" + bike + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(
+                                org.hamcrest.Matchers.containsString("Пробег изменён: пробег: 1200 км → 1250 км"))));
+
+        // правка средней записи выше более поздней — 409 (журнал монотонный)
+        mvc.perform(patch("/api/assets/" + bike + "/mileage/" + middleId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"mileageKm\":1600}"))
+                .andExpect(status().isConflict());
+        // и ниже более ранней — тоже 409
+        mvc.perform(patch("/api/assets/" + bike + "/mileage/" + middleId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"mileageKm\":900}"))
+                .andExpect(status().isConflict());
+
+        // удаление последней записи — текущий пробег пересчитан от оставшихся + событие
+        mvc.perform(delete("/api/assets/" + bike + "/mileage/" + latestId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/assets?type=bike").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$[?(@.id == '" + bike + "')].mileageKm").value(1250));
+        mvc.perform(get("/api/assets/" + bike + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(
+                                org.hamcrest.Matchers.containsString("Пробег удалён: 1500 км"))))
+                // автор события пробега заполнен
+                .andExpect(jsonPath("$[?(@.type == 'mileage' && @.createdByName != null)]").exists());
+
+        // чужая запись — 404
+        mvc.perform(delete("/api/assets/" + bike + "/mileage/" + latestId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
+    }
+
     private org.springframework.test.web.servlet.ResultActions createAsset(String token, String body)
             throws Exception {
         return mvc.perform(post("/api/assets").header("Authorization", "Bearer " + token)
@@ -199,8 +272,18 @@ class MileageLogTest {
     }
 
     private static String extract(String json, String field) {
+        return extract(json, field, 0);
+    }
+
+    /** n-е вхождение поля (0 — первое) — для списков. */
+    private static String extract(String json, String field, int index) {
         Matcher matcher = Pattern.compile("\"" + field + "\":\"([^\"]+)\"").matcher(json);
-        assertThat(matcher.find()).isTrue();
-        return matcher.group(1);
+        for (int i = 0; i <= index; i++) {
+            assertThat(matcher.find()).isTrue();
+            if (i == index) {
+                return matcher.group(1);
+            }
+        }
+        throw new IllegalStateException();
     }
 }

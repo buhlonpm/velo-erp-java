@@ -9,6 +9,7 @@ import com.velo.asset.dto.MileageLogEntry;
 import com.velo.asset.dto.RecordChargeCyclesRequest;
 import com.velo.asset.dto.RecordMileageRequest;
 import com.velo.asset.dto.UpdateAssetRequest;
+import com.velo.asset.dto.UpdateMileageRequest;
 import com.velo.asset.dto.WriteOffAssetRequest;
 import com.velo.bikemodel.BikeModel;
 import com.velo.bikemodel.BikeModelRepository;
@@ -35,6 +36,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -45,7 +49,6 @@ public class AssetService {
     private static final String PURCHASE_CATEGORY = "Покупка оборудования";
     private static final String SALE_CATEGORY = "Продажа оборудования";
     private static final Instant MIN_DATE = Instant.parse("2000-01-01T00:00:00Z");
-    private static final Instant MAX_DATE = Instant.parse("2100-01-01T00:00:00Z");
 
     private final AssetRepository assetRepository;
     private final BikeModelRepository bikeModelRepository;
@@ -144,7 +147,7 @@ public class AssetService {
         }
         if (bundledBike != null) {
             // комплектный актив сразу монтируется на свой велосипед
-            mountOnBike(saved, bundledBike);
+            mountOnBike(saved, bundledBike, author);
         }
         return AssetResponse.from(saved);
     }
@@ -153,6 +156,14 @@ public class AssetService {
     public AssetResponse update(UUID id, UpdateAssetRequest request) {
         Asset asset = assetRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Актив не найден"));
+
+        // Комплектная АКБ/зарядник: покупка наследуется от велосипеда, отдельно не редактируется
+        boolean bundledComponent = (asset instanceof BatteryAsset battery && battery.getBundledBike() != null)
+                || (asset instanceof ChargerAsset charger && charger.getBundledBike() != null);
+        if (bundledComponent && (request.purchasedAt() != null || request.purchasePrice() != null)) {
+            throw new ConflictException("Актив куплен в комплекте с велосипедом — "
+                    + "дата и цена покупки наследуются от него и не редактируются");
+        }
 
         if (request.inventoryNumber() != null && !request.inventoryNumber().equals(asset.getInventoryNumber())) {
             if (assetRepository.existsByInventoryNumber(request.inventoryNumber())) {
@@ -221,7 +232,7 @@ public class AssetService {
 
     /** Установить GPS-трекер на велосипед. Трекер можно поставить только на один велосипед. */
     @Transactional
-    public AssetResponse installTracker(UUID assetId, UUID trackerId) {
+    public AssetResponse installTracker(UUID assetId, UUID trackerId, User author) {
         BikeAsset bike = findBike(assetId);
         if (bike.getStatus() == AssetStatus.SOLD || bike.getStatus() == AssetStatus.DECOMMISSIONED) {
             throw new ConflictException("Велосипед выбыл — трекер установить нельзя");
@@ -243,25 +254,25 @@ public class AssetService {
         bike.setGpsTracker(tracker);
         AssetResponse response = AssetResponse.from(assetRepository.save(bike));
         eventService.record(bike, AssetEventType.TRACKER_INSTALL,
-                "Установлен трекер " + tracker.getModel());
+                "Установлен трекер " + tracker.getModel(), null, null, author);
         return response;
     }
 
     /** Снять GPS-трекер с велосипеда. */
     @Transactional
-    public AssetResponse removeTracker(UUID assetId) {
+    public AssetResponse removeTracker(UUID assetId, User author) {
         BikeAsset bike = findBike(assetId);
         String model = bike.getGpsTracker() != null ? bike.getGpsTracker().getModel() : null;
         bike.setGpsTracker(null);
         AssetResponse response = AssetResponse.from(assetRepository.save(bike));
         eventService.record(bike, AssetEventType.TRACKER_REMOVE,
-                "Трекер снят" + (model != null ? ": " + model : ""));
+                "Трекер снят" + (model != null ? ": " + model : ""), null, null, author);
         return response;
     }
 
     /** Смонтировать АКБ или зарядник на велосипед (на велосипеде — строго по одному каждого типа). */
     @Transactional
-    public AssetResponse mountOnBike(UUID assetId, UUID bikeId) {
+    public AssetResponse mountOnBike(UUID assetId, UUID bikeId, User author) {
         Asset asset = assetRepository.findById(assetId)
                 .orElseThrow(() -> new NotFoundException("Актив не найден"));
         if (!(asset instanceof BatteryAsset) && !(asset instanceof ChargerAsset)) {
@@ -280,12 +291,12 @@ public class AssetService {
         if (bike.getStatus() != AssetStatus.AVAILABLE && bike.getStatus() != AssetStatus.MAINTENANCE) {
             throw new ConflictException("Велосипед недоступен для монтажа");
         }
-        mountOnBike(asset, bike);
+        mountOnBike(asset, bike, author);
         return AssetResponse.from(assetRepository.save(asset));
     }
 
     /** Монтаж без проверок статусов (создание комплектного актива); проверка «по одному» — здесь. */
-    private void mountOnBike(Asset asset, BikeAsset bike) {
+    private void mountOnBike(Asset asset, BikeAsset bike, User author) {
         boolean isBattery = asset instanceof BatteryAsset;
         if (isBattery) {
             assetRepository.findAllBatteriesByBikeId(bike.getId()).stream().findFirst().ifPresent(existing -> {
@@ -306,15 +317,15 @@ public class AssetService {
         assetRepository.save(asset);
         eventService.record(asset, AssetEventType.MOUNT,
                 (isBattery ? "Смонтирована на " : "Смонтирован на ")
-                        + bike.getName() + " (" + bike.getInventoryNumber() + ")");
+                        + bike.getName() + " (" + bike.getInventoryNumber() + ")", null, null, author);
         eventService.record(bike, AssetEventType.MOUNT,
                 (isBattery ? "Смонтирована АКБ " : "Смонтирован зарядник ")
-                        + asset.getName() + " (" + asset.getInventoryNumber() + ")");
+                        + asset.getName() + " (" + asset.getInventoryNumber() + ")", null, null, author);
     }
 
     /** Демонтировать АКБ или зарядник (возврат на склад). */
     @Transactional
-    public AssetResponse unmountFromBike(UUID assetId) {
+    public AssetResponse unmountFromBike(UUID assetId, User author) {
         Asset asset = assetRepository.findById(assetId)
                 .orElseThrow(() -> new NotFoundException("Актив не найден"));
         boolean isBattery = asset instanceof BatteryAsset;
@@ -334,11 +345,13 @@ public class AssetService {
         AssetResponse response = AssetResponse.from(assetRepository.save(asset));
         eventService.record(asset, AssetEventType.UNMOUNT,
                 (isBattery ? "Демонтирована" : "Демонтирован") + (bike != null
-                        ? " с " + bike.getName() + " (" + bike.getInventoryNumber() + ")" : ""));
+                        ? " с " + bike.getName() + " (" + bike.getInventoryNumber() + ")" : ""),
+                null, null, author);
         if (bike != null) {
             eventService.record(bike, AssetEventType.UNMOUNT,
                     (isBattery ? "Демонтирована АКБ " : "Демонтирован зарядник ")
-                            + asset.getName() + " (" + asset.getInventoryNumber() + ")");
+                            + asset.getName() + " (" + asset.getInventoryNumber() + ")",
+                    null, null, author);
         }
         return response;
     }
@@ -373,14 +386,14 @@ public class AssetService {
             battery.setBike(null);
             eventService.record(bike, AssetEventType.UNMOUNT,
                     "АКБ " + battery.getName() + " (" + battery.getInventoryNumber()
-                            + ") выбыла: " + reason.getValue());
+                            + ") выбыла: " + reason.getValue(), null, null, author);
         }
         if (asset instanceof ChargerAsset charger && charger.getBike() != null) {
             BikeAsset bike = charger.getBike();
             charger.setBike(null);
             eventService.record(bike, AssetEventType.UNMOUNT,
                     "Зарядник " + charger.getName() + " (" + charger.getInventoryNumber()
-                            + ") выбыл: " + reason.getValue());
+                            + ") выбыл: " + reason.getValue(), null, null, author);
         }
         if (asset instanceof BikeAsset bike) {
             // АКБ и зарядник — обратно на склад
@@ -391,9 +404,10 @@ public class AssetService {
                 }
                 assetRepository.save(battery);
                 eventService.record(battery, AssetEventType.UNMOUNT,
-                        "Демонтирована: велосипед выбыл");
+                        "Демонтирована: велосипед выбыл", null, null, author);
                 eventService.record(bike, AssetEventType.UNMOUNT,
-                        "АКБ " + battery.getInventoryNumber() + " демонтирована при выбытии");
+                        "АКБ " + battery.getInventoryNumber() + " демонтирована при выбытии",
+                        null, null, author);
             });
             assetRepository.findAllChargersByBikeId(id).forEach(charger -> {
                 charger.setBike(null);
@@ -402,16 +416,17 @@ public class AssetService {
                 }
                 assetRepository.save(charger);
                 eventService.record(charger, AssetEventType.UNMOUNT,
-                        "Демонтирован: велосипед выбыл");
+                        "Демонтирован: велосипед выбыл", null, null, author);
                 eventService.record(bike, AssetEventType.UNMOUNT,
-                        "Зарядник " + charger.getInventoryNumber() + " демонтирован при выбытии");
+                        "Зарядник " + charger.getInventoryNumber() + " демонтирован при выбытии",
+                        null, null, author);
             });
             // трекер: при продаже уходит с велосипедом, иначе — на склад
             if (bike.getGpsTracker() != null && reason != WriteOffReason.SOLD) {
                 String trackerModel = bike.getGpsTracker().getModel();
                 bike.setGpsTracker(null);
                 eventService.record(bike, AssetEventType.TRACKER_REMOVE,
-                        "Трекер " + trackerModel + " снят при выбытии");
+                        "Трекер " + trackerModel + " снят при выбытии", null, null, author);
             }
         }
 
@@ -503,7 +518,7 @@ public class AssetService {
 
     /** Записать пробег в журнал (велосипед или АКБ, вручную); текущий пробег = последняя по дате запись. */
     @Transactional
-    public MileageLogEntry recordMileage(UUID assetId, RecordMileageRequest request) {
+    public MileageLogEntry recordMileage(UUID assetId, RecordMileageRequest request, User author) {
         Asset asset = assetRepository.findById(assetId)
                 .orElseThrow(() -> new NotFoundException("Актив не найден"));
         if (!(asset instanceof BikeAsset) && !(asset instanceof BatteryAsset)) {
@@ -525,19 +540,116 @@ public class AssetService {
         log.setRecordedAt(request.recordedAt() != null ? request.recordedAt() : Instant.now());
         AssetMileageLog saved = mileageLogRepository.save(log);
 
-        // кэш текущего пробега — последняя по дате запись
-        mileageLogRepository.findAllByAssetIdOrderByRecordedAtDescCreatedAtDesc(assetId).stream()
-                .findFirst()
-                .ifPresent(latest -> {
-                    if (asset instanceof BikeAsset bike) {
-                        bike.setMileageKm(latest.getMileageKm());
-                    } else {
-                        ((BatteryAsset) asset).setMileageKm(latest.getMileageKm());
-                    }
-                });
-        assetRepository.save(asset);
-        eventService.record(asset, AssetEventType.MILEAGE, "Пробег: " + request.mileageKm() + " км");
+        recalcMileageCache(asset);
+        eventService.record(asset, AssetEventType.MILEAGE,
+                "Пробег: " + request.mileageKm() + " км", null, null, author);
         return MileageLogEntry.from(saved);
+    }
+
+    /**
+     * Правка записи пробега (значение и/или дата). Журнал монотонный: после правки запись
+     * должна остаться между соседями по дате (prev ≤ значение ≤ next), иначе 409.
+     */
+    @Transactional
+    public MileageLogEntry updateMileageEntry(UUID assetId, UUID logId,
+                                              UpdateMileageRequest request, User author) {
+        Asset asset = assetRepository.findById(assetId)
+                .orElseThrow(() -> new NotFoundException("Актив не найден"));
+        AssetMileageLog log = mileageLogRepository.findById(logId)
+                .filter(entry -> entry.getAssetId().equals(assetId))
+                .orElseThrow(() -> new NotFoundException("Запись пробега не найдена"));
+
+        int oldValue = log.getMileageKm();
+        Instant oldDate = log.getRecordedAt();
+        int newValue = request.mileageKm() != null ? request.mileageKm() : oldValue;
+        Instant newDate = request.recordedAt() != null ? request.recordedAt() : oldDate;
+        if (newValue == oldValue && newDate.equals(oldDate)) {
+            return MileageLogEntry.from(log);
+        }
+        validateMileagePosition(assetId, log, newValue, newDate);
+
+        log.setMileageKm(newValue);
+        log.setRecordedAt(newDate);
+        AssetMileageLog saved = mileageLogRepository.save(log);
+        recalcMileageCache(asset);
+
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                .withZone(ZoneId.systemDefault());
+        List<String> parts = new ArrayList<>();
+        if (newValue != oldValue) {
+            parts.add("пробег: " + oldValue + " км → " + newValue + " км");
+        }
+        if (!newDate.equals(oldDate)) {
+            parts.add("дата: " + formatter.format(oldDate) + " → " + formatter.format(newDate));
+        }
+        eventService.record(asset, AssetEventType.MILEAGE,
+                "Пробег изменён: " + String.join("; ", parts), null, null, author);
+        return MileageLogEntry.from(saved);
+    }
+
+    /** Удаление записи пробега; текущее значение пересчитывается от оставшихся. */
+    @Transactional
+    public void deleteMileageEntry(UUID assetId, UUID logId, User author) {
+        Asset asset = assetRepository.findById(assetId)
+                .orElseThrow(() -> new NotFoundException("Актив не найден"));
+        AssetMileageLog log = mileageLogRepository.findById(logId)
+                .filter(entry -> entry.getAssetId().equals(assetId))
+                .orElseThrow(() -> new NotFoundException("Запись пробега не найдена"));
+        mileageLogRepository.delete(log);
+        recalcMileageCache(asset);
+
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                .withZone(ZoneId.systemDefault());
+        eventService.record(asset, AssetEventType.MILEAGE,
+                "Пробег удалён: " + log.getMileageKm() + " км; дата: " + formatter.format(log.getRecordedAt()),
+                null, null, author);
+    }
+
+    /**
+     * Монотонность журнала: в позиции новой даты значение должно быть не меньше предыдущей
+     * записи и не больше следующей (порядок recorded_at + тай-брейк created_at).
+     */
+    private void validateMileagePosition(UUID assetId, AssetMileageLog log, int newValue, Instant newDate) {
+        List<AssetMileageLog> others = mileageLogRepository
+                .findAllByAssetIdOrderByRecordedAtDescCreatedAtDesc(assetId).stream()
+                .filter(entry -> !entry.getId().equals(log.getId()))
+                .toList();
+        // список свежие-первыми: ищем точку вставки новой позиции
+        int insertAt = 0;
+        while (insertAt < others.size() && isNewer(others.get(insertAt), newDate, log.getCreatedAt())) {
+            insertAt++;
+        }
+        AssetMileageLog newer = insertAt > 0 ? others.get(insertAt - 1) : null;
+        AssetMileageLog older = insertAt < others.size() ? others.get(insertAt) : null;
+        if (older != null && newValue < older.getMileageKm()) {
+            throw new ConflictException("Пробег " + newValue + " км меньше более ранней записи журнала ("
+                    + older.getMileageKm() + " км)");
+        }
+        if (newer != null && newValue > newer.getMileageKm()) {
+            throw new ConflictException("Пробег " + newValue + " км больше более поздней записи журнала ("
+                    + newer.getMileageKm() + " км)");
+        }
+    }
+
+    /** entry строго новее позиции (recordedAt, createdAt)? */
+    private static boolean isNewer(AssetMileageLog entry, Instant recordedAt, Instant createdAt) {
+        int byDate = entry.getRecordedAt().compareTo(recordedAt);
+        return byDate > 0 || (byDate == 0 && entry.getCreatedAt().compareTo(createdAt) > 0);
+    }
+
+    /** Кэш текущего пробега на активе = последняя по дате запись; пустой журнал → null. */
+    private void recalcMileageCache(Asset asset) {
+        Integer current = mileageLogRepository
+                .findAllByAssetIdOrderByRecordedAtDescCreatedAtDesc(asset.getId()).stream()
+                .findFirst()
+                .map(AssetMileageLog::getMileageKm)
+                .orElse(null);
+        if (asset instanceof BikeAsset bike) {
+            bike.setMileageKm(current);
+        } else if (asset instanceof BatteryAsset battery) {
+            battery.setMileageKm(current);
+        }
+        assetRepository.save(asset);
     }
 
     @Transactional(readOnly = true)
@@ -552,7 +664,7 @@ public class AssetService {
 
     /** Записать циклы перезарядки в журнал АКБ; текущее значение = последняя по дате запись. */
     @Transactional
-    public ChargeCycleLogEntry recordChargeCycles(UUID assetId, RecordChargeCyclesRequest request) {
+    public ChargeCycleLogEntry recordChargeCycles(UUID assetId, RecordChargeCyclesRequest request, User author) {
         Asset asset = assetRepository.findById(assetId)
                 .orElseThrow(() -> new NotFoundException("Актив не найден"));
         if (!(asset instanceof BatteryAsset battery)) {
@@ -577,7 +689,8 @@ public class AssetService {
                 .findFirst()
                 .ifPresent(latest -> battery.setChargeCycles(latest.getCycles()));
         assetRepository.save(battery);
-        eventService.record(asset, AssetEventType.CHARGE_CYCLES, "Циклы перезарядки: " + request.cycles());
+        eventService.record(asset, AssetEventType.CHARGE_CYCLES,
+                "Циклы перезарядки: " + request.cycles(), null, null, author);
         return ChargeCycleLogEntry.from(saved);
     }
 
@@ -660,10 +773,16 @@ public class AssetService {
         return bike;
     }
 
-    /** Дата покупки в разумных пределах (2000–2100) — отсекает опечатки вроде года 40000. */
+    /** Дата покупки: не раньше 2000 года (опечатки) и не в будущем. */
     private static void validatePurchaseDate(Instant purchasedAt) {
-        if (purchasedAt != null && (purchasedAt.isBefore(MIN_DATE) || purchasedAt.isAfter(MAX_DATE))) {
+        if (purchasedAt == null) {
+            return;
+        }
+        if (purchasedAt.isBefore(MIN_DATE)) {
             throw new BadRequestException("Некорректная дата покупки: " + purchasedAt);
+        }
+        if (purchasedAt.isAfter(Instant.now())) {
+            throw new BadRequestException("Дата покупки не может быть в будущем");
         }
     }
 

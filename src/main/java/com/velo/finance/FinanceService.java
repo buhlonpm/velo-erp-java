@@ -14,7 +14,9 @@ import com.velo.finance.dto.TransactionResponse;
 import com.velo.finance.dto.UpdateAccountRequest;
 import com.velo.finance.dto.UpdateTransactionRequest;
 import com.velo.rental.Rental;
+import com.velo.rental.RentalEvent;
 import com.velo.rental.RentalEventRepository;
+import com.velo.rental.RentalEventType;
 import com.velo.rental.RentalRepository;
 import com.velo.user.User;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +25,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -177,15 +182,18 @@ public class FinanceService {
      * Правка операции. Доступ — только с правом finance:view (контроллер).
      * Привязка к аренде не редактируется.
      * Системные операции (покупка/продажа техники) не правятся — меняется само доменное действие.
+     * Если операция привязана к аренде и поменялась сумма или дата — пишем событие в ленту аренды.
      */
     @Transactional
-    public TransactionResponse updateTransaction(UUID id, UpdateTransactionRequest request) {
+    public TransactionResponse updateTransaction(UUID id, UpdateTransactionRequest request, User author) {
         FinanceTransaction transaction = transactionRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Операция не найдена"));
         if (transaction.isSystem()) {
             throw new ConflictException("Это системная операция — она создана автоматически "
                     + "(покупка/продажа техники) и не редактируется");
         }
+        int oldAmount = transaction.getAmount();
+        Instant oldDate = transaction.getDate();
         if (request.accountId() != null) {
             FinanceAccount account = accountRepository.findById(request.accountId())
                     .orElseThrow(() -> new NotFoundException("Счёт не найден"));
@@ -208,7 +216,53 @@ public class FinanceService {
         if (request.comment() != null) {
             transaction.setComment(request.comment());
         }
-        return TransactionResponse.from(transactionRepository.save(transaction));
+        TransactionResponse response = TransactionResponse.from(transactionRepository.save(transaction));
+        recordChangeEvent(transaction, oldAmount, oldDate, author);
+        return response;
+    }
+
+    /** Событие в ленту аренды при правке оплаты/возврата: что именно изменилось (сумма и/или дата). */
+    private void recordChangeEvent(FinanceTransaction transaction, int oldAmount, Instant oldDate, User author) {
+        if (transaction.getRental() == null) {
+            return;
+        }
+        boolean amountChanged = transaction.getAmount() != oldAmount;
+        boolean dateChanged = !transaction.getDate().equals(oldDate);
+        if (!amountChanged && !dateChanged) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (amountChanged) {
+            parts.add("сумма: " + formatMoney(oldAmount) + " ₽ → " + formatMoney(transaction.getAmount()) + " ₽");
+        }
+        if (dateChanged) {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                    .withZone(ZoneId.systemDefault());
+            parts.add("дата: " + formatter.format(oldDate) + " → " + formatter.format(transaction.getDate()));
+        }
+        RentalEvent event = new RentalEvent();
+        event.setRental(transaction.getRental());
+        event.setType(transaction.getKind() == CategoryKind.INCOME ? RentalEventType.PAYMENT : RentalEventType.REFUND);
+        event.setDate(Instant.now());
+        event.setDocDate(transaction.getDate());
+        event.setComment((transaction.getKind() == CategoryKind.INCOME ? "Оплата изменена: " : "Возврат изменён: ")
+                + String.join("; ", parts));
+        event.setAmount(transaction.getAmount());
+        event.setTransaction(transaction);
+        event.setCreatedBy(author);
+        rentalEventRepository.save(event);
+    }
+
+    private static String formatMoney(int value) {
+        String digits = Integer.toString(value);
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < digits.length(); i++) {
+            if (i > 0 && (digits.length() - i) % 3 == 0) {
+                result.append(' ');
+            }
+            result.append(digits.charAt(i));
+        }
+        return result.toString();
     }
 
     /**
@@ -219,7 +273,7 @@ public class FinanceService {
      * останется в системе, а расход/приход по ней исчезнет.
      */
     @Transactional
-    public void deleteTransaction(UUID id) {
+    public void deleteTransaction(UUID id, User author) {
         FinanceTransaction transaction = transactionRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Операция не найдена"));
         if (transaction.isSystem()) {
@@ -227,7 +281,28 @@ public class FinanceService {
                     + "(покупка/продажа техники) и не удаляется. Отменяйте само действие: "
                     + "списание/восстановление актива, трекера или SIM-карты");
         }
+        recordDeleteEvent(transaction, author);
         rentalEventRepository.clearTransactionReference(id);
         transactionRepository.delete(transaction);
+    }
+
+    /** Событие в ленту аренды при удалении оплаты/возврата — иначе факт удаления теряется. */
+    private void recordDeleteEvent(FinanceTransaction transaction, User author) {
+        if (transaction.getRental() == null) {
+            return;
+        }
+        boolean income = transaction.getKind() == CategoryKind.INCOME;
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                .withZone(ZoneId.systemDefault());
+        RentalEvent event = new RentalEvent();
+        event.setRental(transaction.getRental());
+        event.setType(income ? RentalEventType.PAYMENT : RentalEventType.REFUND);
+        event.setDate(Instant.now());
+        event.setDocDate(transaction.getDate());
+        event.setComment((income ? "Оплата удалена: " : "Возврат удалён: ")
+                + formatMoney(transaction.getAmount()) + " ₽; дата: " + formatter.format(transaction.getDate()));
+        event.setAmount(transaction.getAmount());
+        event.setCreatedBy(author);
+        rentalEventRepository.save(event);
     }
 }

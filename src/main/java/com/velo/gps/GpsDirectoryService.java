@@ -38,7 +38,6 @@ public class GpsDirectoryService {
 
     private static final String PURCHASE_CATEGORY = "Покупка оборудования";
     private static final Instant MIN_DATE = Instant.parse("2000-01-01T00:00:00Z");
-    private static final Instant MAX_DATE = Instant.parse("2100-01-01T00:00:00Z");
 
     private final SimCardRepository simCardRepository;
     private final GpsTrackerRepository gpsTrackerRepository;
@@ -89,6 +88,7 @@ public class GpsDirectoryService {
             if (request.purchasedAt() == null) {
                 throw new ConflictException("Укажите дату покупки SIM-карты");
             }
+            validatePurchaseDate(request.purchasedAt());
             if (request.purchasePrice() == null || request.purchasePrice() <= 0) {
                 throw new ConflictException("Укажите цену покупки SIM-карты");
             }
@@ -245,6 +245,7 @@ public class GpsDirectoryService {
         if (request.purchasedAt() == null) {
             throw new ConflictException("Укажите дату покупки GPS-трекера");
         }
+        validatePurchaseDate(request.purchasedAt());
         if (request.purchasePrice() == null || request.purchasePrice() <= 0) {
             throw new ConflictException("Укажите цену покупки GPS-трекера");
         }
@@ -443,10 +444,13 @@ public class GpsDirectoryService {
         return ensureCategory(PURCHASE_CATEGORY, CategoryKind.EXPENSE);
     }
 
-    /** Дата покупки в разумных пределах (2000–2100) — отсекает опечатки вроде года 40000. */
+    /** Дата покупки: не раньше 2000 года (опечатки) и не в будущем. */
     private static void validatePurchaseDate(Instant purchasedAt) {
-        if (purchasedAt.isBefore(MIN_DATE) || purchasedAt.isAfter(MAX_DATE)) {
+        if (purchasedAt.isBefore(MIN_DATE)) {
             throw new BadRequestException("Некорректная дата покупки: " + purchasedAt);
+        }
+        if (purchasedAt.isAfter(Instant.now())) {
+            throw new BadRequestException("Дата покупки не может быть в будущем");
         }
     }
 

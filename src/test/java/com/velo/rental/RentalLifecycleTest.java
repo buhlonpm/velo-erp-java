@@ -14,6 +14,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -97,6 +98,15 @@ class RentalLifecycleTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.amount").value(450))
                 .andExpect(jsonPath("$.date").value("2026-08-02T10:00:00Z"));
+        // правка платежа пишет событие в ленту: что изменилось + дата по документам
+        mvc.perform(get("/api/rentals/" + rentalId + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Оплата изменена: сумма: 400 ₽ → 450 ₽"))))
+                // приём оплаты — с указанной датой платежа в комментарии
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Принята оплата; дата: 01.08.2026"))))
+                .andExpect(jsonPath("$[?(@.docDate == '2026-08-02T10:00:00Z')]").exists());
         mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paidAmount").value(1050));
@@ -106,6 +116,12 @@ class RentalLifecycleTest {
         mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paidAmount").value(450));
+        // удаление платежа пишет событие в ленту (сумма и дата по документам)
+        mvc.perform(get("/api/rentals/" + rentalId + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Оплата удалена: 600 ₽"))))
+                .andExpect(jsonPath("$[?(@.docDate == '2026-08-01T10:00:00Z')]").exists());
 
         // отмена черновика: актив снова доступен
         postJson(admin, "/api/rentals/" + rentalId + "/cancel", null)
@@ -177,6 +193,74 @@ class RentalLifecycleTest {
         // досрочный возврат у черновика/завершённой → 409
         postJson(admin, "/api/rentals/" + rentalId + "/early-return", null)
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void earlyReturnDayAndRefundValidation() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Досрочный Клиент\",\"phone\":\"+7 900 000-99-99\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-ER1\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":2,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        // выдача задним числом (−2 дня): начало 2 дня назад, конец — сегодня
+        postJson(admin, "/api/rentals/" + rentalId + "/issue",
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS) + "\"}")
+                .andExpect(status().isOk());
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":2000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+
+        // плановый конец аренды — из карточки
+        String plannedEnd = extract(
+                getJson(admin, "/api/rentals/" + rentalId), "plannedEndAt");
+
+        // возврат в день окончания — это НЕ досрочный возврат → 409
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + plannedEnd + "\"}")
+                .andExpect(status().isConflict());
+        // возврат позже дня окончания — тоже 409
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + Instant.parse(plannedEnd).plus(1, ChronoUnit.DAYS) + "\"}")
+                .andExpect(status().isConflict());
+        // возврат раньше дня начала аренды → 409
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + Instant.now().minus(3, ChronoUnit.DAYS) + "\"}")
+                .andExpect(status().isConflict());
+
+        // возврат больше начисленной суммы аренды на дату приёма (1 день = 1000 ₽) → 409
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + yesterday + "\",\"refundAmount\":2001,\"refundAccountId\":\""
+                                + account + "\"}")
+                .andExpect(status().isConflict());
+
+        // валидный досрочный возврат с рефандом — ок; конец периода = дате завершения
+        String returned = postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + yesterday + "\",\"refundAmount\":500,\"refundAccountId\":\""
+                                + account + "\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed_early"))
+                .andExpect(jsonPath("$.refundedAmount").value(500))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(Instant.parse(extract(returned, "plannedEndAt")))
+                .isEqualTo(Instant.parse(yesterday));
+        mvc.perform(get("/api/rentals/" + rentalId + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(
+                                org.hamcrest.Matchers.containsString("Возврат денег клиенту; дата:"))))
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(
+                                org.hamcrest.Matchers.containsString("Аренда завершена досрочно; дата завершения:"))));
     }
 
     @Test
@@ -265,12 +349,14 @@ class RentalLifecycleTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.paidAmount").value(1000));
 
-        // дата приёма дальше 24 часов от конца аренды → 409
+        // дата приёма в другом календарном дне (конец + 25 ч) → 409 с подсказкой про доплату и продление
         String tooLate = Instant.parse(plannedEnd).plusSeconds(25 * 3600).toString();
         postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + tooLate + "\"}")
-                .andExpect(status().isConflict());
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Продлите аренду")));
 
-        // обычное завершение с датой приёма = конец периода: статус completed, денежных операций нет
+        // обычное завершение с датой приёма = конец периода (тот же день): статус completed
         postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
