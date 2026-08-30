@@ -117,6 +117,14 @@ class RentalFlowTest {
         mvc.perform(get("/api/assets?status=rented").header("Authorization", "Bearer " + admin))
                 .andExpect(jsonPath("$.length()").value(3));
 
+        // оплата целиком: сумма завершённой аренды = оплачено − возвращено
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":550,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+
         // возврат по позициям: одна — аренда ещё активна
         String firstItemId = extract(rentalBody, "id", 1);
         postJson(admin, "/api/rentals/" + rentalId + "/items/" + firstItemId + "/return", null)

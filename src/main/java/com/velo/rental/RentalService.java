@@ -236,7 +236,8 @@ public class RentalService {
      * Досрочный возврат (редкий путь — клиент вернул раньше и просит деньги):
      * статус ВСЕГДА «завершена досрочно», все позиции возвращаются. Только при полной оплате (409).
      * Дата приёма — строго в календарный день ДО дня окончания аренды (в день окончания или позже
-     * — это обычное завершение, 409). Сумма возврата не больше начисленной суммы аренды (409).
+     * — это обычное завершение, 409) и не раньше дня начала. Сумма возврата не больше переплаты
+     * (оплачено − начислено за фактический срок, 409): вернуть можно только разницу.
      */
     @Transactional
     public RentalResponse earlyReturn(UUID rentalId, ReturnItemRequest request, User author) {
@@ -251,10 +252,11 @@ public class RentalService {
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
         assertEarlyReturnDay(rental, returnedAt);
         assertFullyPaid(rental, returnedAt);
-        int amount = rentalAmount(rental, returnedAt);
-        if (request != null && request.refundAmount() != null && request.refundAmount() > amount) {
-            throw new ConflictException("Сумма возврата не может быть больше суммы аренды ("
-                    + amount + " ₽)");
+        int overpaid = financeTransactionRepository.paidSumByRentalId(rental.getId())
+                - RentalAmounts.accruedActual(rental, returnedAt);
+        if (request != null && request.refundAmount() != null && request.refundAmount() > overpaid) {
+            throw new ConflictException("Сумма возврата не может быть больше переплаты ("
+                    + overpaid + " ₽)");
         }
         rental.getItems().stream()
                 .filter(item -> item.getReturnedAt() == null)
@@ -576,9 +578,7 @@ public class RentalService {
 
     /** Начислено по аренде на момент at (rent — позиции по тарифу, rent_to_own — цена выкупа). */
     private static int rentalAmount(Rental rental, Instant at) {
-        return rental.getKind() == RentalKind.RENT_TO_OWN
-                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
-                : rental.getItems().stream().mapToInt(item -> item.amount(at)).sum();
+        return RentalAmounts.accrued(rental, at);
     }
 
     /**

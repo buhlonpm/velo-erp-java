@@ -27,7 +27,10 @@ import com.velo.finance.FinanceTransactionRepository;
 import com.velo.finance.dto.TransactionResponse;
 import com.velo.gps.GpsTracker;
 import com.velo.gps.GpsTrackerRepository;
+import com.velo.rental.Rental;
+import com.velo.rental.RentalAmounts;
 import com.velo.rental.RentalExtensionRepository;
+import com.velo.rental.RentalItem;
 import com.velo.rental.RentalRepository;
 import com.velo.rental.dto.RentalResponse;
 import com.velo.user.User;
@@ -466,22 +469,26 @@ public class AssetService {
                 .map(TransactionResponse::from)
                 .toList();
 
-        List<RentalResponse> rentals = rentalRepository.findAllByAssetId(assetId).stream()
-                .map(rental -> RentalResponse.from(rental, now,
-                        financeTransactionRepository.paidSumByRentalId(rental.getId()),
-                        financeTransactionRepository.refundedSumByRentalId(rental.getId()),
-                        rentalExtensionRepository.findAllByRentalIdOrderByCreatedAtAsc(rental.getId())))
-                .toList();
-
         int purchasePrice = asset.getPurchasePrice() != null ? asset.getPurchasePrice() : 0;
         int expenses = financeTransactionRepository.sumByAssetIdAndKindExcludingCategory(
                 assetId, CategoryKind.EXPENSE, PURCHASE_CATEGORY);
         int income = financeTransactionRepository.sumByAssetIdAndKind(assetId, CategoryKind.INCOME);
-        int rentalAccrued = rentalRepository.findAllByAssetId(assetId).stream()
-                .flatMap(rental -> rental.getItems().stream())
-                .filter(item -> item.getAsset().getId().equals(assetId))
-                .mapToInt(item -> item.amount(now))
-                .sum();
+        // «Принёс» по арендам: для завершённых — финальные суммы позиций (оплачено − возвращено,
+        // разнесено пропорционально начисленному), для остальных — начисленное по тарифам
+        List<RentalResponse> rentals = new ArrayList<>();
+        int rentalAccrued = 0;
+        for (Rental rental : rentalRepository.findAllByAssetId(assetId)) {
+            int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
+            int refunded = financeTransactionRepository.refundedSumByRentalId(rental.getId());
+            rentals.add(RentalResponse.from(rental, now, paid, refunded,
+                    rentalExtensionRepository.findAllByRentalIdOrderByCreatedAtAsc(rental.getId())));
+            var itemAmounts = RentalAmounts.itemAmounts(rental, now, paid, refunded);
+            for (RentalItem item : rental.getItems()) {
+                if (item.getAsset().getId().equals(assetId)) {
+                    rentalAccrued += itemAmounts.get(item.getId());
+                }
+            }
+        }
 
         // roll-up смонтированного оборудования (только для велосипеда)
         List<AssetResponse> mountedBatteries = List.of();

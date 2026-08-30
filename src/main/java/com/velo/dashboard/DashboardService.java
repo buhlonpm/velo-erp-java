@@ -5,9 +5,10 @@ import com.velo.asset.AssetRepository;
 import com.velo.asset.AssetStatus;
 import com.velo.asset.AssetType;
 import com.velo.dashboard.dto.DashboardResponse;
+import com.velo.finance.FinanceTransactionRepository;
 import com.velo.rental.Rental;
+import com.velo.rental.RentalAmounts;
 import com.velo.rental.RentalItem;
-import com.velo.rental.RentalKind;
 import com.velo.rental.RentalRepository;
 import com.velo.rental.RentalStatus;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +34,7 @@ public class DashboardService {
 
     private final AssetRepository assetRepository;
     private final RentalRepository rentalRepository;
+    private final FinanceTransactionRepository financeTransactionRepository;
 
     @Transactional(readOnly = true)
     public DashboardResponse dashboard() {
@@ -95,9 +97,11 @@ public class DashboardService {
     }
 
     private DashboardResponse.RentalRow toRow(Rental rental, Instant now) {
-        int amount = rental.getKind() == RentalKind.RENT_TO_OWN
-                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
-                : rental.getItems().stream().mapToInt(item -> item.amount(now)).sum();
+        // завершённая аренда — сумма по деньгам (оплачено − возвращено), остальные — начисленное
+        int amount = RentalAmounts.isFinished(rental)
+                ? financeTransactionRepository.paidSumByRentalId(rental.getId())
+                        - financeTransactionRepository.refundedSumByRentalId(rental.getId())
+                : RentalAmounts.accrued(rental, now);
         return new DashboardResponse.RentalRow(
                 rental.getId(),
                 rental.getCustomer().getFullName(),

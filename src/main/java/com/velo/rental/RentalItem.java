@@ -74,6 +74,11 @@ public class RentalItem {
         if (periodEnd != null && periodEnd.isAfter(end)) {
             end = periodEnd;
         }
+        return amountForPeriod(end);
+    }
+
+    /** Стоимость позиции за фактический период startAt → end, без доплаты до plannedEndAt. Минимум 1 единица. */
+    public int amountForPeriod(Instant end) {
         long seconds = Math.max(0, end.getEpochSecond() - rental.getStartAt().getEpochSecond());
         long unitSeconds = tariffUnit.getSeconds();
         long units = Math.max(1, (seconds + unitSeconds - 1) / unitSeconds);

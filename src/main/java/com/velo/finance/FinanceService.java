@@ -18,6 +18,7 @@ import com.velo.rental.RentalEvent;
 import com.velo.rental.RentalEventRepository;
 import com.velo.rental.RentalEventType;
 import com.velo.rental.RentalRepository;
+import com.velo.rental.RentalStatus;
 import com.velo.user.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.AccessDeniedException;
@@ -119,6 +120,7 @@ public class FinanceService {
         categoryRepository.delete(category);
     }
 
+    @Transactional(readOnly = true) // rentalStatus в ответе инициализирует прокси аренды — нужна сессия
     public List<TransactionResponse> findTransactions(UUID accountId, CategoryKind kind, UUID rentalId) {
         List<FinanceTransaction> transactions;
         if (rentalId != null && kind != null) {
@@ -192,6 +194,7 @@ public class FinanceService {
             throw new ConflictException("Это системная операция — она создана автоматически "
                     + "(покупка/продажа техники) и не редактируется");
         }
+        assertRentalNotFinished(transaction);
         int oldAmount = transaction.getAmount();
         Instant oldDate = transaction.getDate();
         if (request.accountId() != null) {
@@ -253,6 +256,19 @@ public class FinanceService {
         rentalEventRepository.save(event);
     }
 
+    /**
+     * Операции по завершённой аренде заморожены: сумма аренды зафиксирована как
+     * «оплачено − возвращено», поэтому правки/удаления после закрытия — 409.
+     */
+    private static void assertRentalNotFinished(FinanceTransaction transaction) {
+        Rental rental = transaction.getRental();
+        if (rental != null && (rental.getStatus() == RentalStatus.COMPLETED
+                || rental.getStatus() == RentalStatus.COMPLETED_EARLY)) {
+            throw new ConflictException("Аренда завершена — операции по ней не правятся "
+                    + "и не удаляются");
+        }
+    }
+
     private static String formatMoney(int value) {
         String digits = Integer.toString(value);
         StringBuilder result = new StringBuilder();
@@ -281,6 +297,7 @@ public class FinanceService {
                     + "(покупка/продажа техники) и не удаляется. Отменяйте само действие: "
                     + "списание/восстановление актива, трекера или SIM-карты");
         }
+        assertRentalNotFinished(transaction);
         recordDeleteEvent(transaction, author);
         rentalEventRepository.clearTransactionReference(id);
         transactionRepository.delete(transaction);

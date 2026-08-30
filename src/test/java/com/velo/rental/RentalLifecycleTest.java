@@ -243,12 +243,14 @@ class RentalLifecycleTest {
                                 + account + "\"}")
                 .andExpect(status().isConflict());
 
-        // валидный досрочный возврат с рефандом — ок; конец периода = дате завершения
+        // валидный досрочный возврат с рефандом — ок; конец периода = дате завершения;
+        // сумма аренды фиксируется по деньгам: оплачено 2000 − возвращено 500 = 1500
         String returned = postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + yesterday + "\",\"refundAmount\":500,\"refundAccountId\":\""
                                 + account + "\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed_early"))
+                .andExpect(jsonPath("$.amount").value(1500))
                 .andExpect(jsonPath("$.refundedAmount").value(500))
                 .andReturn().getResponse().getContentAsString();
         assertThat(Instant.parse(extract(returned, "plannedEndAt")))
@@ -261,6 +263,78 @@ class RentalLifecycleTest {
                 .andExpect(jsonPath("$[*].comment",
                         org.hamcrest.Matchers.hasItem(
                                 org.hamcrest.Matchers.containsString("Аренда завершена досрочно; дата завершения:"))));
+
+        // финальная сумма видна и в карточке актива («Принёс» по арендам)
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totals.rentalAccruedTotal").value(1500));
+
+        // операции завершённой аренды заморожены: статус аренды в ответе, правка/удаление → 409
+        String payments = getJson(admin, "/api/finance/transactions?rentalId=" + rentalId);
+        String paymentTxId = extract(payments, "id", 0); // приход 2000 (дата свежее возврата)
+        mvc.perform(get("/api/finance/transactions?rentalId=" + rentalId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].rentalStatus").value("completed_early"));
+        mvc.perform(patch("/api/finance/transactions/" + paymentTxId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":2100}"))
+                .andExpect(status().isConflict());
+        mvc.perform(delete("/api/finance/transactions/" + paymentTxId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void earlyReturnWithoutRefundFixesPaidAmount() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Безвозврат Клиент\",\"phone\":\"+7 900 000-77-66\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bikeA = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-NR1\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bikeB = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-NR2\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // два велосипеда: 1000 и 500 в сутки, срок 2 дня → 3000 оплачено
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":2,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bikeA + "\",\"rate\":1000},"
+                                + "{\"assetId\":\"" + bikeB + "\",\"rate\":500}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + rentalId + "/issue",
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS) + "\"}")
+                .andExpect(status().isOk());
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":3000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+
+        // досрочный возврат через сутки БЕЗ возврата денег: сумма не пересчитывается,
+        // а фиксируется оплаченной (3000), хотя набежало 1500
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + yesterday + "\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed_early"))
+                .andExpect(jsonPath("$.amount").value(3000))
+                .andExpect(jsonPath("$.paidAmount").value(3000))
+                .andExpect(jsonPath("$.refundedAmount").value(0));
+
+        // удержанная переплата разнесена по позициям пропорционально начисленному (2:1)
+        mvc.perform(get("/api/assets/" + bikeA + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totals.rentalAccruedTotal").value(2000));
+        mvc.perform(get("/api/assets/" + bikeB + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totals.rentalAccruedTotal").value(1000));
     }
 
     @Test

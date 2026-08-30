@@ -1,6 +1,7 @@
 package com.velo.rental.dto;
 
 import com.velo.rental.Rental;
+import com.velo.rental.RentalAmounts;
 import com.velo.rental.RentalExtension;
 import com.velo.rental.RentalItem;
 
@@ -20,7 +21,8 @@ public record RentalResponse(
         int deposit,
         Integer buyoutPrice,
         String comment,
-        /** Сумма по позициям: предоплаченный период целиком, просрочка — по факту (rent_to_own — цена выкупа). */
+        /** Сумма аренды: черновик/active — начисленное (предоплаченный период + просрочка по факту,
+         *  rent_to_own — цена выкупа); завершённая — зафиксирована как оплачено − возвращено. */
         int amount,
         /** Оплачено по аренде: только приходы (операции оплаты с rental_id). */
         int paidAmount,
@@ -79,9 +81,7 @@ public record RentalResponse(
 
     public static RentalResponse from(Rental rental, Instant now, int paidAmount, int refundedAmount,
                                       List<RentalExtension> extensions) {
-        int amount = rental.getKind() == com.velo.rental.RentalKind.RENT_TO_OWN
-                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
-                : rental.getItems().stream().mapToInt(item -> item.amount(now)).sum();
+        int amount = RentalAmounts.total(rental, now, paidAmount, refundedAmount);
         return new RentalResponse(
                 rental.getId(),
                 rental.getCustomer().getId(),

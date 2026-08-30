@@ -15,6 +15,8 @@ public record TransactionResponse(
         Instant date,
         String comment,
         UUID rentalId,
+        /** Статус аренды операции (completed/completed_early → операция заморожена, замок на фронте). */
+        String rentalStatus,
         UUID assetId,
         boolean system
 ) {
@@ -28,6 +30,8 @@ public record TransactionResponse(
                 transaction.getDate(),
                 transaction.getComment(),
                 transaction.getRental() != null ? transaction.getRental().getId() : null,
+                transaction.getRental() != null
+                        ? transaction.getRental().getStatus().name().toLowerCase() : null,
                 transaction.getAsset() != null ? transaction.getAsset().getId() : null,
                 transaction.isSystem());
     }
