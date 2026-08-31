@@ -16,7 +16,7 @@ public record RentalResponse(
         UUID customerId,
         String customerName,
         String kind,
-        /** active / overdue / completed / cancelled — вычисляемый статус. */
+        /** draft / active / overdue / completed / completed_early — вычисляемый статус. */
         String status,
         Instant startAt,
         Instant plannedEndAt,
@@ -38,6 +38,9 @@ public record RentalResponse(
         List<ExtensionResponse> extensions,
         /** График платежей (rent_to_own) с вычисленным погашением; у rent — пустой список. */
         List<ScheduleItemResponse> schedule,
+        /** Переплата, поглощённая перестройками графика (rent_to_own): оплачено, но не видно
+         *  в покрытии строк — деньги «съедены» сокращением срока/уменьшением платежей. */
+        Integer scheduleAbsorbed,
         /** Дата ближайшего непогашенного платежа (rent_to_own); null — всё оплачено или rent. */
         Instant nextPaymentDue
 ) {
@@ -134,6 +137,7 @@ public record RentalResponse(
                 rental.getCreatedAt(),
                 extensions.stream().map(ExtensionResponse::from).toList(),
                 schedule,
+                buyout ? rental.getScheduleAbsorbed() : null,
                 nextPaymentDue);
     }
 }

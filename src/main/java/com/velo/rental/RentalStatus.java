@@ -6,6 +6,5 @@ public enum RentalStatus {
     ACTIVE,
     COMPLETED,
     /** Завершена досрочным возвратом (до конца оплаченного периода). */
-    COMPLETED_EARLY,
-    CANCELLED
+    COMPLETED_EARLY
 }

@@ -164,7 +164,7 @@ class RentalBuyoutTest {
     }
 
     @Test
-    void buyoutPriceEditableAndRecalcsSchedule() throws Exception {
+    void buyoutPriceEditableOnlyInDraft() throws Exception {
         String admin = login();
         String account = accountId(admin);
         String customer = createCustomer(admin, "Выкуп Скидка");
@@ -183,31 +183,31 @@ class RentalBuyoutTest {
                 .andExpect(jsonPath("$.schedule[0].amount").value(2000))
                 .andExpect(jsonPath("$.schedule[12].amount").value(2000));
 
-        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
+        // черновик с оплатой: цена не ниже уже оплаченного; график пересчитан (replay),
+        // внесённые 6000 разнесены по новым строкам
         postJson(admin, "/api/rentals/" + rental + "/payments",
                         "{\"amount\":6000,\"accountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated());
-
-        // сумма меньше уже оплаченного → 409
         mvc.perform(patch("/api/rentals/" + rental)
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"buyoutPrice\":5000}"))
                 .andExpect(status().isConflict());
-
-        // активная: оплачено 6000 (3 платежа по 2000); наступившая погашенная неделя —
-        // история, остаток 33000 − 6000 = 27000 размазан по 12 оставшимся неделям → 2250
         mvc.perform(patch("/api/rentals/" + rental)
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"buyoutPrice\":33000}"))
+                        .content("{\"buyoutPrice\":12000}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.schedule[0].status").value("paid"))
-                .andExpect(jsonPath("$.schedule[1].status").value("next"))
-                .andExpect(jsonPath("$.schedule[1].amount").value(2250))
                 .andExpect(jsonPath("$.schedule.length()").value(13));
-        assertThat(sumScheduleRemaining(getJson(admin, "/api/rentals/" + rental)))
-                .isEqualTo(33000 - 6000);
+        assertRemaining(admin, rental, 12000 - 6000);
+
+        // после выдачи условия договора фиксируются — правка запрещена
+        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
+        mvc.perform(patch("/api/rentals/" + rental)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"buyoutPrice\":20000}"))
+                .andExpect(status().isConflict());
     }
 
     @Test
@@ -254,6 +254,47 @@ class RentalBuyoutTest {
         postJson(admin, "/api/assets/" + bike + "/write-off",
                         "{\"reason\":\"broken\"}")
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void forceDeleteOfCompletedBuyoutReturnsAssetsToPark() throws Exception {
+        String admin = login();
+        String account = accountId(admin);
+        String customer = createCustomer(admin, "Выкуп Удаление");
+        String bike = createBike(admin, account, "VIN-BO-DEL");
+        // комплектная АКБ — смонтирована на велосипеде, в выкуп едет за 0 ₽
+        String battery = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"battery\",\"inventoryNumber\":\"BAT-BO-DEL\","
+                                + "\"purchasePrice\":0,\"bundledBikeId\":\"" + bike + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        String rental = createBuyout(admin, customer, bike, 39000, 13);
+        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
+        postJson(admin, "/api/rentals/" + rental + "/payments",
+                        "{\"amount\":39000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + rental + "/complete", "{}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed"));
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("bought_out"));
+        mvc.perform(get("/api/assets/" + battery + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("bought_out"));
+
+        // админ force-удаляет завершённый выкуп — всё возвращается «как было»:
+        // байк снова доступен, комплектная АКБ — смонтирована на нём, следов аренды нет
+        mvc.perform(delete("/api/rentals/" + rental + "/force").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + rental).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("available"));
+        mvc.perform(get("/api/assets/" + battery + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("mounted"));
+        mvc.perform(get("/api/finance/transactions?rentalId=" + rental)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
@@ -498,7 +539,7 @@ class RentalBuyoutTest {
     }
 
     @Test
-    void paymentDeleteAfterRebuildDoesNotRollbackButPriceEditRestores() throws Exception {
+    void paymentDeleteReplaysScheduleFromScratch() throws Exception {
         String admin = login();
         String account = accountId(admin);
         String customer = createCustomer(admin, "Выкуп Удаление");
@@ -509,25 +550,58 @@ class RentalBuyoutTest {
                         "{\"amount\":9000,\"accountId\":\"" + account
                                 + "\",\"overpaymentStrategy\":\"shorten_term\"}")
                 .andExpect(status().isCreated());
+        assertRemaining(admin, rental, 30000);
 
-        // удаление оплаты: сделанное сокращение срока НЕ откатывается — остаток = сумме
-        // текущих строк (33000), хотя по деньгам не оплачено ничего
+        // удаление оплаты: график пересчитывается с нуля (replay) — как будто оплаты не было:
+        // исходные 13 × 3000, ничего не погашено, поглощение обнулено
         String payment = extract(getJson(admin, "/api/finance/transactions?rentalId=" + rental), "id");
         mvc.perform(delete("/api/finance/transactions/" + payment)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNoContent());
         String body = getJson(admin, "/api/rentals/" + rental);
         assertThat(extractInt(body, "paidAmount")).isZero();
-        assertThat(sumScheduleRemaining(body)).isEqualTo(33000);
+        assertThat(extractInt(body, "scheduleAbsorbed")).isZero();
+        assertThat(body).contains("\"schedule\":[");
+        assertThat(sumScheduleRemaining(body)).isEqualTo(39000);
+        mvc.perform(get("/api/rentals/" + rental).header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.schedule.length()").value(13))
+                .andExpect(jsonPath("$.schedule[0].amount").value(3000))
+                .andExpect(jsonPath("$.schedule[0].status").value("next"));
+    }
 
-        // ручное восстановление: переставить сумму выкупа (даже на ту же) — хвост
-        // пересчитывается от неё, остаток снова равен цене выкупа
-        mvc.perform(patch("/api/rentals/" + rental)
-                        .header("Authorization", "Bearer " + admin)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"buyoutPrice\":39000}"))
-                .andExpect(status().isOk());
-        assertRemaining(admin, rental, 39000);
+    @Test
+    void deleteFirstOfTwoStrategyPaymentsReplaysRest() throws Exception {
+        String admin = login();
+        String account = accountId(admin);
+        String customer = createCustomer(admin, "Выкуп УдалениеПервого");
+        String bike = createBike(admin, account, "VIN-BR11");
+        String rental = createBuyout(admin, customer, bike, 39000, 13);
+        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
+
+        // два платежа с перестройками: shorten, затем reduce
+        postJson(admin, "/api/rentals/" + rental + "/payments",
+                        "{\"amount\":9000,\"accountId\":\"" + account
+                                + "\",\"overpaymentStrategy\":\"shorten_term\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + rental + "/payments",
+                        "{\"amount\":6000,\"accountId\":\"" + account
+                                + "\",\"overpaymentStrategy\":\"reduce_next\"}")
+                .andExpect(status().isCreated());
+        assertRemaining(admin, rental, 39000 - 15000);
+
+        // удаляем ПЕРВЫЙ платёж: replay проигрывает только второй (6000, reduce)
+        // на исходном графике 13 × 3000 → строка 1 погашена, остаток 33000 по 12 слотам (2750)
+        String paymentsJson = getJson(admin, "/api/finance/transactions?rentalId=" + rental);
+        String firstPayment = extractIdByAmount(paymentsJson, 9000);
+        mvc.perform(delete("/api/finance/transactions/" + firstPayment)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + rental).header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.paidAmount").value(6000))
+                .andExpect(jsonPath("$.schedule.length()").value(13))
+                .andExpect(jsonPath("$.schedule[0].status").value("paid"))
+                .andExpect(jsonPath("$.schedule[1].amount").value(2750));
+        assertRemaining(admin, rental, 39000 - 6000);
     }
 
     @Test
@@ -554,35 +628,77 @@ class RentalBuyoutTest {
     }
 
     @Test
-    void priceEditActiveAfterShortenKeepsInvariant() throws Exception {
+    void draftFullyEditableIncludingItemsAndTerm() throws Exception {
         String admin = login();
         String account = accountId(admin);
-        String customer = createCustomer(admin, "Выкуп ЦенаПосле");
-        String bike = createBike(admin, account, "VIN-BR9");
-        String rental = createBuyout(admin, customer, bike, 39000, 13);
-        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
-        postJson(admin, "/api/rentals/" + rental + "/payments",
-                        "{\"amount\":9000,\"accountId\":\"" + account
-                                + "\",\"overpaymentStrategy\":\"shorten_term\"}")
-                .andExpect(status().isCreated());
-        assertRemaining(admin, rental, 30000);
+        String customer = createCustomer(admin, "Выкуп ЧерновикВсё");
+        String customer2 = createCustomer(admin, "Выкуп ДругойКлиент");
+        String bike1 = createBike(admin, account, "VIN-BR9A");
+        String bike2 = createBike(admin, account, "VIN-BR9B");
+        String rental = createBuyout(admin, customer, bike1, 39000, 13);
 
-        // подняли цену выкупа: хвост (10 слотов) пересчитан на 45000 − 9000 = 36000 → 3600
+        // полная правка черновика: другой клиент, другой байк, другой срок и цена
+        Instant newStart = Instant.now().plus(3, ChronoUnit.DAYS);
         mvc.perform(patch("/api/rentals/" + rental)
                         .header("Authorization", "Bearer " + admin)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"buyoutPrice\":45000}"))
+                        .content("{\"customerId\":\"" + customer2 + "\","
+                                + "\"startAt\":\"" + newStart + "\","
+                                + "\"termWeeks\":26,\"buyoutPrice\":52000,"
+                                + "\"items\":[{\"assetId\":\"" + bike2 + "\",\"rate\":2000}]}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.schedule.length()").value(11))
-                .andExpect(jsonPath("$.schedule[1].amount").value(3600));
-        assertRemaining(admin, rental, 45000 - 9000);
+                .andExpect(jsonPath("$.customerId").value(customer2))
+                .andExpect(jsonPath("$.termWeeks").value(26))
+                .andExpect(jsonPath("$.buyoutPrice").value(52000))
+                .andExpect(jsonPath("$.schedule.length()").value(26))
+                .andExpect(jsonPath("$.schedule[0].amount").value(2000))
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].assetId").value(bike2));
 
-        // доплата до новой цены закрывает выкуп ровно в ноль
-        postJson(admin, "/api/rentals/" + rental + "/payments",
-                        "{\"amount\":36000,\"accountId\":\"" + account + "\"}")
-                .andExpect(status().isCreated());
-        assertRemaining(admin, rental, 0);
-        postJson(admin, "/api/rentals/" + rental + "/complete", "{}").andExpect(status().isOk());
+        // активы перерезервированы: старый снова доступен, новый в резерве
+        mvc.perform(get("/api/assets/" + bike1 + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("available"));
+        mvc.perform(get("/api/assets/" + bike2 + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.status").value("reserved"));
+
+        // недопустимый срок выкупа → 409
+        mvc.perform(patch("/api/rentals/" + rental)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"termWeeks\":10}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void rentDraftEditableToo() throws Exception {
+        String admin = login();
+        String account = accountId(admin);
+        String customer = createCustomer(admin, "Аренда ЧерновикВсё");
+        String bike = createBike(admin, account, "VIN-BR12");
+        String rental = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":2,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":500}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // новый срок: plannedEndAt = startAt + 5 дней
+        String body = getJson(admin, "/api/rentals/" + rental);
+        Instant startAt = Instant.parse(extract(body, "startAt"));
+        mvc.perform(patch("/api/rentals/" + rental)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"duration\":5,\"durationUnit\":\"day\"}"))
+                .andExpect(status().isOk());
+        Instant plannedEnd = Instant.parse(extract(getJson(admin, "/api/rentals/" + rental), "plannedEndAt"));
+        assertThat(plannedEnd.getEpochSecond() - startAt.getEpochSecond())
+                .isEqualTo(5L * 86_400);
+
+        // после выдачи править нельзя
+        postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
+        mvc.perform(patch("/api/rentals/" + rental)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"duration\":7,\"durationUnit\":\"day\"}"))
+                .andExpect(status().isConflict());
     }
 
     @Test
@@ -665,6 +781,17 @@ class RentalBuyoutTest {
             throw new IllegalStateException("Поле " + field + " не найдено в " + json);
         }
         return Integer.parseInt(matcher.group(1));
+    }
+
+    /** id операции по сумме (порядок полей TransactionResponse: id … amount). */
+    private static String extractIdByAmount(String transactionsJson, int amount) {
+        Matcher matcher = Pattern.compile(
+                "\"id\":\"([^\"]+)\",\"accountId\":\"[^\"]+\",\"categoryId\":\"[^\"]+\","
+                        + "\"kind\":\"[^\"]+\",\"amount\":" + amount + "[,}]").matcher(transactionsJson);
+        if (!matcher.find()) {
+            throw new IllegalStateException("Операция на " + amount + " не найдена в " + transactionsJson);
+        }
+        return matcher.group(1);
     }
 
     /** id аренд из конкретного блока дашборда ("overdue" / "endingSoon"). */

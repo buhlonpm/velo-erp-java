@@ -12,8 +12,7 @@ public enum RentalEventType {
     SCHEDULE("schedule"),
     ITEM_RETURN("item_return"),
     REFUND("refund"),
-    COMPLETED("completed"),
-    CANCELLED("cancelled");
+    COMPLETED("completed");
 
     private final String value;
 

@@ -192,12 +192,13 @@ public class RentalService {
                 RENTAL_PAYMENT_CATEGORY, request.amount(), request.accountId(), "Оплата аренды", author, date);
         String comment = "Принята оплата; дата: " + fmt(payment.getDate());
         if (rental.getKind() == RentalKind.RENT_TO_OWN) {
-            // покрытие строк графика — FIFO от «оплачено − поглощённая перестройками переплата»;
-            // стратегия переплаты перестраивает хвост (и обновляет absorbed)
-            int paidAfter = financeTransactionRepository.paidSumByRentalId(rental.getId());
-            RentalSchedule.allocate(rental.getScheduleItems(), paidAfter - rental.getScheduleAbsorbed());
+            // стратегия хранится на операции; график пересчитывается с нуля (replay) —
+            // так правка/удаление оплат всегда возвращает график в консистентное состояние
+            payment.setOverpaymentStrategy(request.overpaymentStrategy());
+            RentalSchedule.replay(rental, financeTransactionRepository
+                    .findAllByRentalIdAndKindOrderByDateAscCreatedAtAsc(rental.getId(),
+                            CategoryKind.INCOME));
             if (request.overpaymentStrategy() != null) {
-                RentalSchedule.rebuildTail(rental, paidAfter, request.overpaymentStrategy(), date);
                 comment += request.overpaymentStrategy() == OverpaymentStrategy.SHORTEN_TERM
                         ? "; переплата: срок сокращён"
                         : "; переплата: следующие платежи уменьшены";
@@ -210,44 +211,143 @@ public class RentalService {
     }
 
     /**
-     * Правка общей суммы выкупа (rent_to_own, черновик/активная): «хвост» графика
-     * пересчитывается равномерно (как reduce_next) — недельный платёж меняется.
-     * Новая сумма не может быть меньше уже оплаченного.
+     * Полная правка черновика: клиент, дата начала, комментарий, срок (rent) или срок/цена
+     * выкупа (rent_to_own), позиции. После выдачи условия договора фиксируются — 409.
+     * Тип договора (kind) не меняется. Принятые оплаты сохраняются (деньги привязаны к аренде);
+     * график выкупа пересчитывается с нуля (replay) от новых условий с той же историей оплат.
+     * Замена позиций: старые активы освобождаются из резерва, новые резервируются (как при
+     * создании), комплект подтягивается автоматом с тарифом 0.
      */
     @Transactional
-    public RentalResponse updateBuyoutPrice(UUID rentalId, UpdateRentalRequest request, User author) {
+    public RentalResponse update(UUID rentalId, UpdateRentalRequest request, User author) {
         Rental rental = findRental(rentalId);
-        if (rental.getKind() != RentalKind.RENT_TO_OWN) {
-            throw new ConflictException("Сумма выкупа есть только у аренды под выкуп");
+        if (rental.getStatus() != RentalStatus.DRAFT) {
+            throw new ConflictException("Менять аренду можно только в черновике — "
+                    + "после выдачи условия договора фиксируются");
         }
-        if (rental.getStatus() != RentalStatus.DRAFT && rental.getStatus() != RentalStatus.ACTIVE) {
-            throw new ConflictException("Сумму выкупа можно менять, пока аренда не закрыта");
-        }
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
         int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
-        if (request.buyoutPrice() < paid) {
-            throw new ConflictException("Сумма выкупа меньше уже оплаченного (" + paid + " ₽)");
+
+        if (request.customerId() != null && !request.customerId().equals(rental.getCustomer().getId())) {
+            Customer customer = customerRepository.findById(request.customerId())
+                    .orElseThrow(() -> new NotFoundException("Клиент не найден"));
+            rental.setCustomer(customer);
         }
-        int oldPrice = rental.getBuyoutPrice();
-        rental.setBuyoutPrice(request.buyoutPrice());
-        if (rental.getStatus() == RentalStatus.DRAFT) {
-            // черновик ещё не начался: график перегенерируем от даты начала целиком,
-            // поглощённое обнуляем (полная перестройка) и заново разносим уже внесённые оплаты
-            rental.getScheduleItems().clear();
-            RentalSchedule.generate(rental, rental.getTermWeeks(), request.buyoutPrice(),
-                    rental.getStartAt());
-            rental.setScheduleAbsorbed(0);
-            RentalSchedule.allocate(rental.getScheduleItems(), paid);
-            rental.setPlannedEndAt(rental.getScheduleItems().isEmpty()
-                    ? rental.getPlannedEndAt()
-                    : rental.getScheduleItems().get(rental.getScheduleItems().size() - 1).getDueDate());
+        if (request.comment() != null) {
+            rental.setComment(request.comment());
+        }
+
+        Instant oldStartAt = rental.getStartAt();
+        if (request.startAt() != null) {
+            rental.setStartAt(request.startAt());
+        }
+
+        if (buyout) {
+            if (request.termWeeks() != null) {
+                if (!BUYOUT_TERM_WEEKS.contains(request.termWeeks())) {
+                    throw new ConflictException("Срок выкупа — 13, 26 или 52 недели");
+                }
+                rental.setTermWeeks(request.termWeeks());
+            }
+            if (request.buyoutPrice() != null) {
+                if (request.buyoutPrice() < paid) {
+                    throw new ConflictException("Сумма выкупа меньше уже оплаченного (" + paid + " ₽)");
+                }
+                rental.setBuyoutPrice(request.buyoutPrice());
+            }
+            if (request.duration() != null || request.durationUnit() != null) {
+                throw new ConflictException("У выкупа срок задаётся в неделях (termWeeks)");
+            }
         } else {
-            RentalSchedule.rebuildTail(rental, paid, OverpaymentStrategy.REDUCE_NEXT, Instant.now());
+            if (request.termWeeks() != null || request.buyoutPrice() != null) {
+                throw new ConflictException("Срок в неделях и цена выкупа — только у аренды под выкуп");
+            }
+            if (request.duration() != null || request.durationUnit() != null) {
+                if (request.duration() == null || request.durationUnit() == null) {
+                    throw new ConflictException("Срок аренды задаётся парой: количество и единица");
+                }
+                rental.setPlannedEndAt(rental.getStartAt()
+                        .plusSeconds(request.duration() * request.durationUnit().getSeconds()));
+            } else if (request.startAt() != null && rental.getPlannedEndAt() != null) {
+                // сдвиг начала без новой длительности: период сохраняет длину
+                long periodSeconds = rental.getPlannedEndAt().getEpochSecond() - oldStartAt.getEpochSecond();
+                rental.setPlannedEndAt(rental.getStartAt().plusSeconds(periodSeconds));
+            }
         }
-        rentalRepository.save(rental);
-        recordEvent(rental, RentalEventType.SCHEDULE,
-                "Сумма выкупа изменена: " + oldPrice + " ₽ → " + request.buyoutPrice() + " ₽",
-                null, null, author);
-        return toResponse(rental, Instant.now());
+
+        if (request.items() != null) {
+            if (request.items().isEmpty()) {
+                throw new ConflictException("Добавьте хотя бы одну позицию");
+            }
+            replaceItems(rental, request.items(), buyout, request.durationUnit());
+        }
+
+        // график выкупа пересчитывается от новых условий с той же историей оплат
+        if (buyout) {
+            RentalSchedule.replay(rental, financeTransactionRepository
+                    .findAllByRentalIdAndKindOrderByDateAscCreatedAtAsc(rental.getId(),
+                            CategoryKind.INCOME));
+        }
+
+        Rental saved = rentalRepository.save(rental);
+        recordEvent(saved, RentalEventType.SCHEDULE, "Черновик изменён", null, null, author);
+        return toResponse(saved, Instant.now());
+    }
+
+    /** Замена позиций черновика: старые активы освобождаются из резерва, новые проверяются
+     *  на доступность и резервируются; комплект (смонтированные АКБ/зарядник) — как при создании. */
+    private void replaceItems(Rental rental, List<CreateRentalRequest.Item> newItems, boolean buyout,
+                              TariffUnit durationUnit) {
+        // единица тарифа позиций: у выкупа всегда неделя; у аренды — новая единица срока,
+        // а если срок не меняли — прежняя единица позиций (у всех корневых она одна)
+        TariffUnit itemUnit = buyout ? TariffUnit.WEEK
+                : durationUnit != null ? durationUnit
+                : rental.getItems().stream().filter(item -> item.getParentItem() == null)
+                        .findFirst().map(RentalItem::getTariffUnit).orElse(TariffUnit.DAY);
+
+        rental.getItems().forEach(item -> release(item.getAsset()));
+        rental.getItems().clear();
+
+        for (CreateRentalRequest.Item itemRequest : newItems) {
+            Asset asset = assetRepository.findById(itemRequest.assetId())
+                    .orElseThrow(() -> new NotFoundException("Актив не найден: " + itemRequest.assetId()));
+            if (asset.getStatus() != AssetStatus.AVAILABLE) {
+                throw new ConflictException("Актив недоступен: " + asset.getName()
+                        + " (" + asset.getInventoryNumber() + ")");
+            }
+            RentalItem item = new RentalItem();
+            item.setRental(rental);
+            item.setAsset(asset);
+            item.setTariffUnit(itemUnit);
+            item.setRate(itemRequest.rate() != null ? itemRequest.rate() : 0);
+            rental.getItems().add(item);
+            // черновик резервирует актив до выдачи
+            asset.setStatus(AssetStatus.RESERVED);
+        }
+
+        // авто-комплект: как при создании — смонтированные АКБ/зарядник дочерними позициями за 0 ₽
+        for (RentalItem parent : List.copyOf(rental.getItems())) {
+            if (!(parent.getAsset() instanceof BikeAsset bike)) {
+                continue;
+            }
+            List<Asset> kit = new ArrayList<>(assetRepository.findAllBatteriesByBikeId(bike.getId()));
+            kit.addAll(assetRepository.findAllChargersByBikeId(bike.getId()));
+            for (Asset kitAsset : kit) {
+                if (kitAsset.getStatus() != AssetStatus.AVAILABLE
+                        && kitAsset.getStatus() != AssetStatus.MOUNTED) {
+                    throw new ConflictException("Комплект велосипеда недоступен: "
+                            + kitAsset.getName() + " (" + kitAsset.getInventoryNumber() + ")");
+                }
+                RentalItem child = new RentalItem();
+                child.setRental(rental);
+                child.setAsset(kitAsset);
+                child.setTariffUnit(parent.getTariffUnit());
+                child.setRate(0);
+                child.setParentItem(parent);
+                rental.getItems().add(child);
+                kitAsset.setStatus(AssetStatus.RESERVED);
+            }
+        }
     }
 
     /**
@@ -454,50 +554,60 @@ public class RentalService {
     }
 
     /**
-     * Отмена черновика: позиции освобождаются из резерва, принятые по черновику платежи
-     * удаляются вместе с их событиями в ленте (деньги клиенту возвращают вне системы).
-     * Выданную аренду отменить нельзя — только возврат.
-     */
-    @Transactional
-    public RentalResponse cancel(UUID rentalId, User author) {
-        Rental rental = findRental(rentalId);
-        if (rental.getStatus() != RentalStatus.DRAFT) {
-            throw new ConflictException("Отменить можно только черновик — выданную аренду оформляйте возвратом");
-        }
-        // на черновике могут быть только приходные платежи; события payment ссылаются
-        // на них по FK — удаляем события целиком, затем сами операции
-        rentalEventRepository.deleteByRentalIdAndType(rentalId, RentalEventType.PAYMENT);
-        financeTransactionRepository.findAllByRentalIdOrderByDateDesc(rentalId)
-                .forEach(financeTransactionRepository::delete);
-        rental.getItems().stream()
-                .filter(item -> item.getReturnedAt() == null)
-                .forEach(item -> {
-                    item.setReturnedAt(Instant.now());
-                    release(item.getAsset());
-                });
-        rental.setStatus(RentalStatus.CANCELLED);
-        Rental saved = rentalRepository.save(rental);
-        recordEvent(saved, RentalEventType.CANCELLED, "Аренда отменена", null, null, author);
-        return toResponse(saved, Instant.now());
-    }
-
-    /**
-     * Удаление аренды без следа (только ADMIN — контроллер; только финальные статусы:
-     * cancelled/completed/completed_early). Каскадно стираются события ленты, продления и ВСЕ
-     * финансовые операции по аренде (оплаты/возвраты; балансы счетов вычисляемые — пересчитаются
-     * сами). Позиции аренды удаляются JPA-каскадом.
+     * Удаление черновика («завели по ошибке») — доступно любому сотруднику. Только draft и
+     * только без принятых оплат: если платежи были, их сначала удаляют из истории оплат (409).
+     * Активы освобождаются из резерва. Выданную аренду так удалить нельзя — только админом.
      */
     @Transactional
     public void delete(UUID rentalId) {
         Rental rental = findRental(rentalId);
-        if (rental.getStatus() == RentalStatus.DRAFT || rental.getStatus() == RentalStatus.ACTIVE) {
-            throw new ConflictException("Удалить можно только завершённую или отменённую аренду");
+        if (rental.getStatus() != RentalStatus.DRAFT) {
+            throw new ConflictException("Удалить можно только черновик — выданную аренду удаляет администратор");
         }
-        // события ссылаются на операции по FK — сначала лента, потом операции
-        rentalEventRepository.deleteByRentalId(rentalId);
-        financeTransactionRepository.findAllByRentalIdOrderByDateDesc(rentalId)
+        if (!financeTransactionRepository.findAllByRentalIdOrderByDateDesc(rentalId).isEmpty()) {
+            throw new ConflictException("По черновику приняты оплаты — сначала удалите их из истории оплат");
+        }
+        releaseAssets(rental);
+        wipe(rental);
+    }
+
+    /**
+     * Принудительное удаление аренды без следа из ЛЮБОГО статуса (только ADMIN — контроллер).
+     * Возвращает всё «как было»: активы из резерва/аренды освобождаются (reserved/rented →
+     * available/mounted), выкупленные (bought_out) — тоже возвращаются в парк, будто выкупа
+     * не было. Активы уже завершённых обычных аренд (available/mounted) не трогаем.
+     */
+    @Transactional
+    public void adminDelete(UUID rentalId) {
+        Rental rental = findRental(rentalId);
+        releaseAssets(rental);
+        wipe(rental);
+    }
+
+    /**
+     * Освободить активы позиций: резерв/аренда/выкуп → обратно в парк (АКБ/зарядник на
+     * велосипеде → mounted, остальное → available). Активы в других статусах не трогаем.
+     */
+    private void releaseAssets(Rental rental) {
+        rental.getItems().forEach(item -> {
+            AssetStatus status = item.getAsset().getStatus();
+            if (status == AssetStatus.RESERVED || status == AssetStatus.RENTED
+                    || status == AssetStatus.BOUGHT_OUT) {
+                release(item.getAsset());
+            }
+        });
+    }
+
+    /**
+     * Бесследное стирание: лента событий (ссылается на операции по FK) → финансовые операции
+     * (балансы счетов вычисляемые — пересчитаются сами) → продления → сама аренда
+     * (позиции и график выкупа сносятся каскадом).
+     */
+    private void wipe(Rental rental) {
+        rentalEventRepository.deleteByRentalId(rental.getId());
+        financeTransactionRepository.findAllByRentalIdOrderByDateDesc(rental.getId())
                 .forEach(financeTransactionRepository::delete);
-        rentalExtensionRepository.deleteByRentalId(rentalId);
+        rentalExtensionRepository.deleteByRentalId(rental.getId());
         rentalRepository.delete(rental);
     }
 

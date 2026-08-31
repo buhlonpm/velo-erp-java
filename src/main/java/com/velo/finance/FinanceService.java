@@ -310,19 +310,18 @@ public class FinanceService {
     }
 
     /**
-     * Переразнести покрытие графика платежей выкупа после приёма/правки/удаления оплаты
-     * (FIFO от «оплачено − поглощённая перестройками переплата»). Сделанные перестроения
-     * графика (стратегии переплаты, скидка) при этом НЕ откатываются — покрытие просто
-     * заново разносится по текущим строкам.
+     * Пересчёт графика платежей выкупа после правки/удаления оплаты — полный replay с нуля:
+     * исходный график от текущих условий + все оставшиеся оплаты в хронологии с их стратегиями
+     * (стратегия хранится на операции). Удалённая ошибочная оплата выпадает из истории —
+     * график возвращается к виду «как будто её не было».
      */
     private void reallocateBuyoutSchedule(FinanceTransaction transaction) {
         Rental rental = transaction.getRental();
-        if (rental == null || rental.getKind() != RentalKind.RENT_TO_OWN
-                || rental.getScheduleItems().isEmpty()) {
+        if (rental == null || rental.getKind() != RentalKind.RENT_TO_OWN) {
             return;
         }
-        RentalSchedule.allocate(rental.getScheduleItems(),
-                transactionRepository.paidSumByRentalId(rental.getId()) - rental.getScheduleAbsorbed());
+        RentalSchedule.replay(rental, transactionRepository
+                .findAllByRentalIdAndKindOrderByDateAscCreatedAtAsc(rental.getId(), CategoryKind.INCOME));
     }
 
     /** Событие в ленту аренды при удалении оплаты/возврата — иначе факт удаления теряется. */

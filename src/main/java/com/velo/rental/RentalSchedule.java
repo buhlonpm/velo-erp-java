@@ -168,6 +168,32 @@ public final class RentalSchedule {
         rental.setPlannedEndAt(items.get(items.size() - 1).getDueDate());
     }
 
+    /**
+     * Полный пересчёт графика с нуля (как в кредитных системах): регенерируем исходный график
+     * от текущих условий (цена выкупа × срок от startAt) и заново проигрываем все оплаты
+     * в хронологии — каждая со своей стратегией переплаты (хранится на операции). Вызывается
+     * на приём/правку/удаление оплаты и на правку условий черновика: удалённая ошибочная
+     * оплата выпадает из истории, и график возвращается к виду «как будто её не было».
+     * Детерминировано: rebuildTail считает от даты платежа, а она хранится в операции.
+     */
+    public static void replay(Rental rental, List<com.velo.finance.FinanceTransaction> payments) {
+        rental.getScheduleItems().clear();
+        generate(rental, rental.getTermWeeks(), rental.getBuyoutPrice(), rental.getStartAt());
+        rental.setScheduleAbsorbed(0);
+        int paid = 0;
+        for (com.velo.finance.FinanceTransaction payment : payments) {
+            paid += payment.getAmount();
+            allocate(rental.getScheduleItems(), paid - rental.getScheduleAbsorbed());
+            if (payment.getOverpaymentStrategy() != null) {
+                rebuildTail(rental, paid, payment.getOverpaymentStrategy(), payment.getDate());
+            }
+        }
+        if (!rental.getScheduleItems().isEmpty()) {
+            rental.setPlannedEndAt(rental.getScheduleItems()
+                    .get(rental.getScheduleItems().size() - 1).getDueDate());
+        }
+    }
+
     /** Генерация графика при создании: N платежей от даты начала, первый — в день начала. */
     public static void generate(Rental rental, int termWeeks, int buyoutPrice, Instant startAt) {
         int weekly = buyoutPrice / termWeeks;

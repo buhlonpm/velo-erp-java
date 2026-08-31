@@ -67,6 +67,10 @@ public interface FinanceTransactionRepository extends JpaRepository<FinanceTrans
     /** Операции по аренде заданного типа (оплаты — INCOME, возвраты — EXPENSE). */
     List<FinanceTransaction> findAllByRentalIdAndKindOrderByDateDesc(UUID rentalId, CategoryKind kind);
 
+    /** Оплаты аренды в хронологии (date, затем createdAt) — replay графика выкупа. */
+    List<FinanceTransaction> findAllByRentalIdAndKindOrderByDateAscCreatedAtAsc(UUID rentalId,
+                                                                                CategoryKind kind);
+
     /** Сумма операций по активу заданного типа (INCOME/EXPENSE). */
     @Query("""
             SELECT COALESCE(SUM(t.amount), 0)

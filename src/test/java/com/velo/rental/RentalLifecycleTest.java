@@ -50,7 +50,7 @@ class RentalLifecycleTest {
     MockMvc mvc;
 
     @Test
-    void draftReservesAssetsAndCancelReleases() throws Exception {
+    void draftReservesAssetsAndDeleteReleases() throws Exception {
         String admin = login();
         String account = extract(getJson(admin, "/api/finance/accounts"), "id");
         String customer = extract(postJson(admin, "/api/customers",
@@ -123,18 +123,20 @@ class RentalLifecycleTest {
                         org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Оплата удалена: 600 ₽"))))
                 .andExpect(jsonPath("$[?(@.docDate == '2026-08-01T10:00:00Z')]").exists());
 
-        // отмена черновика: актив снова доступен
-        postJson(admin, "/api/rentals/" + rentalId + "/cancel", null)
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("cancelled"));
+        // удаление черновика: пока есть принятая оплата → 409 «сначала удалите оплаты»
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+        // удаляем оставшийся платёж — и черновик удаляется бесследно, актив снова доступен
+        mvc.perform(delete("/api/finance/transactions/" + latestTxId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
         mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + bike + "')]").exists());
-
-        // платёж по отменённой → 409
-        postJson(admin, "/api/rentals/" + rentalId + "/payments",
-                        "{\"amount\":100,\"accountId\":\"" + account + "\"}")
-                .andExpect(status().isConflict());
+        mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -165,8 +167,8 @@ class RentalLifecycleTest {
         postJson(admin, "/api/rentals/" + rentalId + "/issue", null)
                 .andExpect(status().isConflict());
 
-        // отменить выданную нельзя
-        postJson(admin, "/api/rentals/" + rentalId + "/cancel", null)
+        // удалить выданную обычным удалением нельзя (только force админом)
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isConflict());
 
         // завершение без полной оплаты → 409 (и обычное, и досрочное)
@@ -341,7 +343,7 @@ class RentalLifecycleTest {
     }
 
     @Test
-    void cancelDraftDeletesPayments() throws Exception {
+    void draftWithPaymentsCannotBeDeletedUntilPaymentsRemoved() throws Exception {
         String admin = login();
         String account = extract(getJson(admin, "/api/finance/accounts"), "id");
         String customer = extract(postJson(admin, "/api/customers",
@@ -368,19 +370,23 @@ class RentalLifecycleTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1));
 
-        // отмена черновика удаляет платёж и его событие, статус → cancelled
-        postJson(admin, "/api/rentals/" + rentalId + "/cancel", null)
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("cancelled"))
-                .andExpect(jsonPath("$.paidAmount").value(0));
+        // черновик с оплатой удалить нельзя — сначала платёж удаляется из истории оплат
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+        String txId = extract(getJson(admin, "/api/finance/transactions?rentalId=" + rentalId), "id");
+        mvc.perform(delete("/api/finance/transactions/" + txId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+
+        // теперь черновик удаляется бесследно
+        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
         mvc.perform(get("/api/finance/transactions?rentalId=" + rentalId)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
-        mvc.perform(get("/api/rentals/" + rentalId + "/events").header("Authorization", "Bearer " + admin))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.type == 'payment')]").doesNotExist())
-                .andExpect(jsonPath("$[?(@.type == 'cancelled')]").exists());
     }
 
     @Test
@@ -532,28 +538,8 @@ class RentalLifecycleTest {
                                 + "\"purchaseAccountId\":\"" + account + "\","
                                 + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
-        String rentalId = extract(postJson(admin, "/api/rentals",
-                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
-                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // черновик удалить нельзя
-        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
-                .andExpect(status().isConflict());
-        postJson(admin, "/api/rentals/" + rentalId + "/payments",
-                        "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
-                .andExpect(status().isCreated());
-        postJson(admin, "/api/rentals/" + rentalId + "/issue", null).andExpect(status().isOk());
-        // активную — тоже нельзя
-        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
-                .andExpect(status().isConflict());
-
-        // завершаем (дата приёма = конец периода)
-        String plannedEnd = extract(getJson(admin, "/api/rentals/" + rentalId), "plannedEndAt");
-        postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
-                .andExpect(status().isOk());
-
-        // менеджеру удалять нельзя → 403
+        // менеджер для проверки прав
         postJson(admin, "/api/users",
                         "{\"email\":\"deleter@velo.local\",\"fullName\":\"Менеджер\","
                                 + "\"password\":\"manager-pass-1\",\"role\":\"MANAGER\"}")
@@ -564,11 +550,36 @@ class RentalLifecycleTest {
                 .andExpect(status().isOk()).andReturn();
         String manager = managerLogin.getResponse().getContentAsString()
                 .split("\"accessToken\":\"")[1].split("\"")[0];
+
+        // черновик без оплат («завели по ошибке») удаляет ЛЮБОЙ сотрудник, актив освобождается
+        String draftId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        mvc.perform(delete("/api/rentals/" + draftId).header("Authorization", "Bearer " + manager))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/rentals/" + draftId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + bike + "')]").exists());
+
+        // активную аренду обычным удалением не удалить (409), force — только админу (менеджеру 403)
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", null).andExpect(status().isOk());
         mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + manager))
+                .andExpect(status().isConflict());
+        mvc.perform(delete("/api/rentals/" + rentalId + "/force").header("Authorization", "Bearer " + manager))
                 .andExpect(status().isForbidden());
 
-        // админ удаляет — не остаётся следов: аренда, лента, операции
-        mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+        // админ force-удаляет активную — не остаётся следов, велосипед снова доступен
+        mvc.perform(delete("/api/rentals/" + rentalId + "/force").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNoContent());
         mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNotFound());
@@ -579,20 +590,27 @@ class RentalLifecycleTest {
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
-        // велосипед остался и снова доступен
         mvc.perform(get("/api/assets?status=available").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + bike + "')]").exists());
 
-        // отменённую тоже можно удалить
-        String cancelledId = extract(postJson(admin, "/api/rentals",
+        // завершённую аренду админ тоже удаляет force'ом
+        String completedId = extract(postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"day\","
                                 + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
-        postJson(admin, "/api/rentals/" + cancelledId + "/cancel", null).andExpect(status().isOk());
-        mvc.perform(delete("/api/rentals/" + cancelledId).header("Authorization", "Bearer " + admin))
+        postJson(admin, "/api/rentals/" + completedId + "/payments",
+                        "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + completedId + "/issue", null).andExpect(status().isOk());
+        String plannedEnd = extract(getJson(admin, "/api/rentals/" + completedId), "plannedEndAt");
+        postJson(admin, "/api/rentals/" + completedId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
+                .andExpect(status().isOk());
+        mvc.perform(delete("/api/rentals/" + completedId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+        mvc.perform(delete("/api/rentals/" + completedId + "/force").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNoContent());
-        mvc.perform(get("/api/rentals/" + cancelledId).header("Authorization", "Bearer " + admin))
+        mvc.perform(get("/api/rentals/" + completedId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNotFound());
     }
 

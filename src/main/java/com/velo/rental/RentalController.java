@@ -58,12 +58,12 @@ public class RentalController {
         return ResponseEntity.status(HttpStatus.CREATED).body(rentalService.create(request, author));
     }
 
-    /** Правка суммы выкупа (только rent_to_own, черновик/активная) — график пересчитывается. */
+    /** Полная правка черновика (клиент, даты, срок, позиции, цена выкупа). У выданной — 409. */
     @PatchMapping("/{id}")
     public RentalResponse update(@PathVariable UUID id,
                                  @Valid @RequestBody UpdateRentalRequest request,
                                  @AuthenticationPrincipal User author) {
-        return rentalService.updateBuyoutPrice(id, request, author);
+        return rentalService.update(id, request, author);
     }
 
     @PostMapping("/{id}/payments")
@@ -121,16 +121,21 @@ public class RentalController {
         return rentalService.returnItem(id, itemId, request, author);
     }
 
-    @PostMapping("/{id}/cancel")
-    public RentalResponse cancel(@PathVariable UUID id, @AuthenticationPrincipal User author) {
-        return rentalService.cancel(id, author);
-    }
-
-    /** Удаление аренды без следа (только финальные статусы) — только ADMIN. */
+    /**
+     * Удаление черновика без принятых оплат («завели по ошибке») — любой сотрудник.
+     * Черновик с оплатами → 409 (сначала удалить оплаты), выданная → 409 (только force админом).
+     */
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> delete(@PathVariable UUID id) {
         rentalService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    /** Принудительное удаление аренды без следа из любого статуса — только ADMIN. */
+    @DeleteMapping("/{id}/force")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> forceDelete(@PathVariable UUID id) {
+        rentalService.adminDelete(id);
         return ResponseEntity.noContent().build();
     }
 }

@@ -17,11 +17,6 @@ public interface RentalEventRepository extends JpaRepository<RentalEvent, UUID> 
     @Query("UPDATE RentalEvent e SET e.transaction = null WHERE e.transaction.id = :transactionId")
     void clearTransactionReference(@Param("transactionId") UUID transactionId);
 
-    /** Удалить события заданного типа по аренде (например, payment при отмене черновика). */
-    @Modifying
-    @Query("DELETE FROM RentalEvent e WHERE e.rental.id = :rentalId AND e.type = :type")
-    void deleteByRentalIdAndType(@Param("rentalId") UUID rentalId, @Param("type") RentalEventType type);
-
     /** Удалить всю ленту аренды (при удалении самой аренды). */
     @Modifying
     @Query("DELETE FROM RentalEvent e WHERE e.rental.id = :rentalId")

@@ -106,7 +106,6 @@ public class Rental {
             case ACTIVE -> "active";
             case COMPLETED -> "completed";
             case COMPLETED_EARLY -> "completed_early";
-            case CANCELLED -> "cancelled";
         };
     }
 }

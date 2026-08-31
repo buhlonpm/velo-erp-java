@@ -72,17 +72,9 @@ class CustomerDeletionTest {
                                 + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // есть аренда — удалить нельзя
+        // есть аренда — удалить нельзя; после бесследного удаления черновика клиента удалить можно
         mvc.perform(delete("/api/customers/" + customer).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isConflict());
-
-        // отмена черновика не помогает: аренда в истории остаётся
-        postJson(admin, "/api/rentals/" + rentalId + "/cancel", null)
-                .andExpect(status().isOk());
-        mvc.perform(delete("/api/customers/" + customer).header("Authorization", "Bearer " + admin))
-                .andExpect(status().isConflict());
-
-        // после бесследного удаления аренды (ADMIN) клиента удалить можно
         mvc.perform(delete("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNoContent());
         mvc.perform(delete("/api/customers/" + customer).header("Authorization", "Bearer " + admin))

@@ -83,6 +83,12 @@ public class FinanceTransaction {
     @Column(name = "is_system", nullable = false)
     private boolean system = false;
 
+    /** Стратегия переплаты, выбранная при приёме оплаты выкупа (rent_to_own). Хранится на
+     *  операции, чтобы график пересчитывался с нуля (replay) после правки/удаления оплат. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "overpayment_strategy")
+    private com.velo.rental.OverpaymentStrategy overpaymentStrategy;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
