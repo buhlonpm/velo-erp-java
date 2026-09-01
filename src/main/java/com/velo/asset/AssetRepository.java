@@ -31,4 +31,11 @@ public interface AssetRepository extends JpaRepository<Asset, UUID> {
     @Query("SELECT c FROM ChargerAsset c WHERE c.bike.id = :bikeId")
     java.util.List<ChargerAsset> findAllChargersByBikeId(@Param("bikeId") UUID bikeId);
 
+    /** Комплектные АКБ/зарядник, купленные вместе с велосипедом (наследуют его дату покупки). */
+    @Query("SELECT b FROM BatteryAsset b WHERE b.bundledBike.id = :bikeId")
+    java.util.List<BatteryAsset> findAllBatteriesByBundledBikeId(@Param("bikeId") UUID bikeId);
+
+    @Query("SELECT c FROM ChargerAsset c WHERE c.bundledBike.id = :bikeId")
+    java.util.List<ChargerAsset> findAllChargersByBundledBikeId(@Param("bikeId") UUID bikeId);
+
 }

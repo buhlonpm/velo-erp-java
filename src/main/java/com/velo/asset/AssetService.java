@@ -183,6 +183,13 @@ public class AssetService {
         if (request.purchasedAt() != null) {
             validatePurchaseDate(request.purchasedAt());
             asset.setPurchasedAt(request.purchasedAt());
+            // комплектные АКБ/зарядник наследуют дату покупки велосипеда — каскадом меняем и им
+            if (asset instanceof BikeAsset bike) {
+                assetRepository.findAllBatteriesByBundledBikeId(bike.getId())
+                        .forEach(battery -> battery.setPurchasedAt(bike.getPurchasedAt()));
+                assetRepository.findAllChargersByBundledBikeId(bike.getId())
+                        .forEach(charger -> charger.setPurchasedAt(bike.getPurchasedAt()));
+            }
         }
         if (request.purchasePrice() != null) {
             asset.setPurchasePrice(request.purchasePrice());

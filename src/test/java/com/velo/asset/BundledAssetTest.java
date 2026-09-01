@@ -119,6 +119,28 @@ class BundledAssetTest {
     }
 
     @Test
+    void bikePurchaseDateCascadesToBundledComponents() throws Exception {
+        String admin = login();
+        String bike = createBike(admin, "VIN-BND9");
+        String battery = createBundled(admin, bike, "battery", "AKB-BND9");
+        String charger = createBundled(admin, bike, "charger", "CHG-BND9");
+
+        // смена даты покупки велосипеда — комплектные АКБ и зарядник наследуют новую дату
+        mvc.perform(patch("/api/assets/" + bike)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purchasedAt\":\"2024-06-20T10:00:00Z\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.purchasedAt").value("2024-06-20T10:00:00Z"));
+        mvc.perform(get("/api/assets/" + battery + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.asset.purchasedAt").value("2024-06-20T10:00:00Z"));
+        mvc.perform(get("/api/assets/" + charger + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.asset.purchasedAt").value("2024-06-20T10:00:00Z"));
+    }
+
+    @Test
     void bundledChargerAutoMounts() throws Exception {
         String admin = login();
         String bike = createBike(admin, "VIN-BND5");
