@@ -1,6 +1,7 @@
 package com.velo.tariff;
 
 import com.velo.bikemodel.BikeModel;
+import com.velo.rental.RentalKind;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -35,6 +36,11 @@ public class Tariff {
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "model_id", nullable = false)
     private BikeModel model;
+
+    /** Для какого вида договора тариф: аренда или выкуп (у выкупа строго unit=week, один на модель). */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 12)
+    private RentalKind kind = RentalKind.RENT;
 
     @Column(nullable = false)
     private String name;

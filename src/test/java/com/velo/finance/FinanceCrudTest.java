@@ -189,6 +189,38 @@ class FinanceCrudTest {
     }
 
     @Test
+    void systemCategoriesSeededAndNotDeletable() throws Exception {
+        String admin = login("admin@velo.local", "admin123");
+
+        // системные статьи сидятся при старте и помечены system=true
+        MvcResult result = mvc.perform(get("/api/finance/categories")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.name == 'Оплата аренды' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Платёж по выкупу' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Возврат по аренде' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Возврат по выкупу' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Покупка оборудования' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Продажа оборудования' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Обслуживание и ремонт' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Чаевые' && @.system == false)]").exists())
+                .andReturn();
+        String systemCategoryId = extractByName(result.getResponse().getContentAsString(), "Оплата аренды");
+
+        // удалить системную нельзя, даже без операций
+        mvc.perform(delete("/api/finance/categories/" + systemCategoryId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+    }
+
+    private static String extractByName(String json, String name) {
+        Matcher matcher = Pattern.compile(
+                "\\{\"id\":\"([^\"]+)\",\"name\":\"" + name + "\"").matcher(json);
+        assertThat(matcher.find()).as("статья «%s» в списке", name).isTrue();
+        return matcher.group(1);
+    }
+
+    @Test
     void transactionValidationAndFilters() throws Exception {
         String admin = login("admin@velo.local", "admin123");
         String accountId = firstAccountId(admin);

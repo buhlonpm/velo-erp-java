@@ -21,9 +21,9 @@ import com.velo.finance.CategoryKind;
 import com.velo.finance.FinanceAccount;
 import com.velo.finance.FinanceAccountRepository;
 import com.velo.finance.FinanceCategory;
-import com.velo.finance.FinanceCategoryRepository;
 import com.velo.finance.FinanceTransaction;
 import com.velo.finance.FinanceTransactionRepository;
+import com.velo.finance.SystemCategories;
 import com.velo.finance.dto.TransactionResponse;
 import com.velo.gps.GpsTracker;
 import com.velo.gps.GpsTrackerRepository;
@@ -49,8 +49,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AssetService {
 
-    private static final String PURCHASE_CATEGORY = "Покупка оборудования";
-    private static final String SALE_CATEGORY = "Продажа оборудования";
+    private static final String PURCHASE_CATEGORY = SystemCategories.EQUIPMENT_PURCHASE;
+    private static final String SALE_CATEGORY = SystemCategories.EQUIPMENT_SALE;
     private static final Instant MIN_DATE = Instant.parse("2000-01-01T00:00:00Z");
 
     private final AssetRepository assetRepository;
@@ -59,7 +59,7 @@ public class AssetService {
     private final AssetChargeCycleLogRepository chargeCycleLogRepository;
     private final FinanceTransactionRepository financeTransactionRepository;
     private final FinanceAccountRepository financeAccountRepository;
-    private final FinanceCategoryRepository financeCategoryRepository;
+    private final SystemCategories systemCategories;
     private final RentalRepository rentalRepository;
     private final RentalExtensionRepository rentalExtensionRepository;
     private final GpsTrackerRepository gpsTrackerRepository;
@@ -726,14 +726,7 @@ public class AssetService {
     private FinanceTransaction recordPurchaseExpense(Asset asset, UUID accountId, User author) {
         FinanceAccount account = financeAccountRepository.findById(accountId)
                 .orElseThrow(() -> new NotFoundException("Счёт не найден"));
-        FinanceCategory category = financeCategoryRepository
-                .findByNameAndKind(PURCHASE_CATEGORY, CategoryKind.EXPENSE)
-                .orElseGet(() -> {
-                    FinanceCategory created = new FinanceCategory();
-                    created.setName(PURCHASE_CATEGORY);
-                    created.setKind(CategoryKind.EXPENSE);
-                    return financeCategoryRepository.save(created);
-                });
+        FinanceCategory category = systemCategories.ensure(PURCHASE_CATEGORY, CategoryKind.EXPENSE);
 
         FinanceTransaction transaction = new FinanceTransaction();
         transaction.setAccount(account);
@@ -751,14 +744,7 @@ public class AssetService {
     private FinanceTransaction recordSaleIncome(Asset asset, int price, UUID accountId, User author) {
         FinanceAccount account = financeAccountRepository.findById(accountId)
                 .orElseThrow(() -> new NotFoundException("Счёт не найден"));
-        FinanceCategory category = financeCategoryRepository
-                .findByNameAndKind(SALE_CATEGORY, CategoryKind.INCOME)
-                .orElseGet(() -> {
-                    FinanceCategory created = new FinanceCategory();
-                    created.setName(SALE_CATEGORY);
-                    created.setKind(CategoryKind.INCOME);
-                    return financeCategoryRepository.save(created);
-                });
+        FinanceCategory category = systemCategories.ensure(SALE_CATEGORY, CategoryKind.INCOME);
 
         FinanceTransaction transaction = new FinanceTransaction();
         transaction.setAccount(account);

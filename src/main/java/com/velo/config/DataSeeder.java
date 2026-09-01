@@ -6,6 +6,7 @@ import com.velo.finance.FinanceAccount;
 import com.velo.finance.FinanceAccountRepository;
 import com.velo.finance.FinanceCategory;
 import com.velo.finance.FinanceCategoryRepository;
+import com.velo.finance.SystemCategories;
 import com.velo.user.Role;
 import com.velo.user.User;
 import com.velo.user.UserRepository;
@@ -16,7 +17,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -62,25 +62,32 @@ public class DataSeeder implements ApplicationRunner {
             accountRepository.save(cash);
             log.info("Создан счёт по умолчанию: {}", cash.getName());
         }
-        if (categoryRepository.count() == 0) {
-            Map<String, CategoryKind> defaults = Map.ofEntries(
-                    Map.entry("Оплата аренды", CategoryKind.INCOME),
-                    Map.entry("Залог", CategoryKind.INCOME),
-                    Map.entry("Штраф за повреждения", CategoryKind.INCOME),
-                    Map.entry("Обслуживание и ремонт", CategoryKind.EXPENSE),
-                    Map.entry("Аренда помещения", CategoryKind.EXPENSE),
-                    Map.entry("Зарплата", CategoryKind.EXPENSE),
-                    Map.entry("Реклама", CategoryKind.EXPENSE));
-            List<FinanceCategory> categories = defaults.entrySet().stream()
-                    .map(entry -> {
-                        FinanceCategory category = new FinanceCategory();
-                        category.setName(entry.getKey());
-                        category.setKind(entry.getValue());
-                        return category;
-                    })
-                    .toList();
-            categoryRepository.saveAll(categories);
-            log.info("Созданы статьи прихода/расхода по умолчанию: {} шт.", categories.size());
-        }
+        // системные статьи — всегда гарантируем (нельзя удалить, доменный код ссылается по имени)
+        SystemCategories.ALL.forEach((name, kind) -> ensureCategory(name, kind, true));
+        // дефолтные пользовательские — можно удалять
+        Map<String, CategoryKind> defaults = Map.of(
+                "Введение денег в бизнес", CategoryKind.INCOME,
+                "Чаевые", CategoryKind.INCOME,
+                "Зарплата", CategoryKind.EXPENSE,
+                "Реклама", CategoryKind.EXPENSE,
+                "Аренда", CategoryKind.EXPENSE);
+        defaults.forEach((name, kind) -> ensureCategory(name, kind, false));
+    }
+
+    private void ensureCategory(String name, CategoryKind kind, boolean system) {
+        categoryRepository.findByNameAndKind(name, kind).ifPresentOrElse(existing -> {
+            if (system && !existing.isSystem()) {
+                existing.setSystem(true);
+                categoryRepository.save(existing);
+                log.info("Статья «{}» помечена системной", name);
+            }
+        }, () -> {
+            FinanceCategory category = new FinanceCategory();
+            category.setName(name);
+            category.setKind(kind);
+            category.setSystem(system);
+            categoryRepository.save(category);
+            log.info("Создана{} статья: {}", system ? " системная" : "", name);
+        });
     }
 }

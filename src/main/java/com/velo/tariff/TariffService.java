@@ -4,6 +4,7 @@ import com.velo.bikemodel.BikeModel;
 import com.velo.bikemodel.BikeModelRepository;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
+import com.velo.rental.RentalKind;
 import com.velo.tariff.dto.CreateTariffRequest;
 import com.velo.tariff.dto.TariffResponse;
 import com.velo.tariff.dto.UpdateTariffRequest;
@@ -31,8 +32,19 @@ public class TariffService {
     public TariffResponse create(CreateTariffRequest request) {
         BikeModel model = bikeModelRepository.findById(request.modelId())
                 .orElseThrow(() -> new NotFoundException("Модель не найдена"));
+        RentalKind kind = request.kind() != null ? request.kind() : RentalKind.RENT;
+        if (kind == RentalKind.RENT_TO_OWN) {
+            // тариф под выкуп — единственный недельный тариф модели для договоров выкупа
+            if (request.unit() != TariffUnit.WEEK) {
+                throw new ConflictException("Тариф под выкуп — только недельный");
+            }
+            if (tariffRepository.existsByModelIdAndKind(model.getId(), RentalKind.RENT_TO_OWN)) {
+                throw new ConflictException("У этой модели уже есть тариф под выкуп");
+            }
+        }
         String name = request.name().trim();
-        if (tariffRepository.existsByModelIdAndNameAndUnit(model.getId(), name, request.unit())) {
+        if (tariffRepository.existsByModelIdAndNameAndUnitAndKind(model.getId(), name, request.unit(),
+                kind)) {
             throw new ConflictException("У этой модели уже есть такой тариф");
         }
         Tariff tariff = new Tariff();
@@ -40,6 +52,7 @@ public class TariffService {
         tariff.setName(name);
         tariff.setUnit(request.unit());
         tariff.setPrice(request.price());
+        tariff.setKind(kind);
         return TariffResponse.from(tariffRepository.save(tariff));
     }
 

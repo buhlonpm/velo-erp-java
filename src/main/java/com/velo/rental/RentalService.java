@@ -14,9 +14,9 @@ import com.velo.finance.CategoryKind;
 import com.velo.finance.FinanceAccount;
 import com.velo.finance.FinanceAccountRepository;
 import com.velo.finance.FinanceCategory;
-import com.velo.finance.FinanceCategoryRepository;
 import com.velo.finance.FinanceTransaction;
 import com.velo.finance.FinanceTransactionRepository;
+import com.velo.finance.SystemCategories;
 import com.velo.rental.dto.CompleteRentalRequest;
 import com.velo.rental.dto.CreateRentalRequest;
 import com.velo.rental.dto.ExtendRentalRequest;
@@ -51,13 +51,17 @@ public class RentalService {
     private final AssetRepository assetRepository;
     private final FinanceTransactionRepository financeTransactionRepository;
     private final FinanceAccountRepository financeAccountRepository;
-    private final FinanceCategoryRepository financeCategoryRepository;
+    private final SystemCategories systemCategories;
     private final RentalEventRepository rentalEventRepository;
     private final RentalExtensionRepository rentalExtensionRepository;
 
-    /** Системные статьи для операций аренды (создаются на лету, как «Покупка оборудования»). */
-    private static final String RENTAL_PAYMENT_CATEGORY = "Оплата аренды";
-    private static final String RENTAL_REFUND_CATEGORY = "Возврат по аренде";
+    /** Статья операции по аренде зависит от вида договора: аренда и выкуп — разные статьи. */
+    private static String rentalCategoryName(Rental rental, CategoryKind kind) {
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
+        return kind == CategoryKind.INCOME
+                ? (buyout ? SystemCategories.BUYOUT_PAYMENT : SystemCategories.RENTAL_PAYMENT)
+                : (buyout ? SystemCategories.BUYOUT_REFUND : SystemCategories.RENTAL_REFUND);
+    }
 
     /** Допустимые сроки выкупа в неделях. */
     private static final List<Integer> BUYOUT_TERM_WEEKS = List.of(13, 26, 52);
@@ -188,10 +192,12 @@ public class RentalService {
             throw new ConflictException("Стратегия переплаты применима только к аренде под выкуп");
         }
         Instant date = request.date() != null ? request.date() : Instant.now();
+        boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
         FinanceTransaction payment = recordRentalTransaction(rental, CategoryKind.INCOME,
-                RENTAL_PAYMENT_CATEGORY, request.amount(), request.accountId(), "Оплата аренды", author, date);
+                request.amount(), request.accountId(),
+                buyout ? "Платёж по выкупу" : "Оплата аренды", author, date);
         String comment = "Принята оплата; дата: " + fmt(payment.getDate());
-        if (rental.getKind() == RentalKind.RENT_TO_OWN) {
+        if (buyout) {
             // стратегия хранится на операции; график пересчитывается с нуля (replay) —
             // так правка/удаление оплат всегда возвращает график в консистентное состояние
             payment.setOverpaymentStrategy(request.overpaymentStrategy());
@@ -475,7 +481,7 @@ public class RentalService {
 
         if (request != null && request.refundAmount() != null && request.refundAmount() > 0) {
             FinanceTransaction refund = recordRentalTransaction(saved, CategoryKind.EXPENSE,
-                    RENTAL_REFUND_CATEGORY, request.refundAmount(), request.refundAccountId(),
+                    request.refundAmount(), request.refundAccountId(),
                     "Возврат денег клиенту по аренде", author, returnedAt);
             recordEvent(saved, RentalEventType.REFUND,
                     "Возврат денег клиенту; дата: " + fmt(returnedAt),
@@ -540,7 +546,7 @@ public class RentalService {
         // возврат денег клиенту: расходная операция со счёта + событие в ленту
         if (request != null && request.refundAmount() != null && request.refundAmount() > 0) {
             FinanceTransaction refund = recordRentalTransaction(rental, CategoryKind.EXPENSE,
-                    RENTAL_REFUND_CATEGORY, request.refundAmount(), request.refundAccountId(),
+                    request.refundAmount(), request.refundAccountId(),
                     "Возврат денег клиенту по аренде", author);
             recordEvent(rental, RentalEventType.REFUND,
                     "Возврат денег клиенту; дата: " + fmt(now), request.refundAmount(), refund, author, now);
@@ -869,26 +875,19 @@ public class RentalService {
                 + suggestion + " примите доплату — после этого аренду можно завершить");
     }
 
-    /** Приходная/расходная операция по аренде (оплата, продление, возврат денег). */
-    private FinanceTransaction recordRentalTransaction(Rental rental, CategoryKind kind, String categoryName,
+    /** Приходная/расходная операция по аренде (оплата, возврат денег). Статья — системная, по виду договора. */
+    private FinanceTransaction recordRentalTransaction(Rental rental, CategoryKind kind,
                                                        int amount, UUID accountId, String comment, User author) {
-        return recordRentalTransaction(rental, kind, categoryName, amount, accountId, comment, author,
+        return recordRentalTransaction(rental, kind, amount, accountId, comment, author,
                 Instant.now());
     }
 
-    private FinanceTransaction recordRentalTransaction(Rental rental, CategoryKind kind, String categoryName,
+    private FinanceTransaction recordRentalTransaction(Rental rental, CategoryKind kind,
                                                        int amount, UUID accountId, String comment, User author,
                                                        Instant date) {
         FinanceAccount account = financeAccountRepository.findById(accountId)
                 .orElseThrow(() -> new NotFoundException("Счёт не найден"));
-        FinanceCategory category = financeCategoryRepository
-                .findByNameAndKind(categoryName, kind)
-                .orElseGet(() -> {
-                    FinanceCategory created = new FinanceCategory();
-                    created.setName(categoryName);
-                    created.setKind(kind);
-                    return financeCategoryRepository.save(created);
-                });
+        FinanceCategory category = systemCategories.ensure(rentalCategoryName(rental, kind), kind);
         FinanceTransaction transaction = new FinanceTransaction();
         transaction.setAccount(account);
         transaction.setCategory(category);

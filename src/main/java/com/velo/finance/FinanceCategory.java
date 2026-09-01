@@ -34,6 +34,10 @@ public class FinanceCategory {
     @Column(nullable = false, length = 10)
     private CategoryKind kind;
 
+    /** Системная статья (оплата/возврат аренды, покупка/продажа техники и т.п.) — не удаляется. */
+    @Column(name = "is_system", nullable = false)
+    private boolean system;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

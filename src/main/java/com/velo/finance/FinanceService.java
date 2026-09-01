@@ -116,6 +116,9 @@ public class FinanceService {
     public void deleteCategory(UUID id) {
         FinanceCategory category = categoryRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Статья не найдена"));
+        if (category.isSystem()) {
+            throw new ConflictException("Это системная статья — она не удаляется");
+        }
         if (transactionRepository.existsByCategoryId(id)) {
             throw new ConflictException("По статье есть операции — удалить нельзя");
         }

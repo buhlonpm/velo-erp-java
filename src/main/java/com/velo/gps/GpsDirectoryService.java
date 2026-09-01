@@ -11,9 +11,9 @@ import com.velo.finance.CategoryKind;
 import com.velo.finance.FinanceAccount;
 import com.velo.finance.FinanceAccountRepository;
 import com.velo.finance.FinanceCategory;
-import com.velo.finance.FinanceCategoryRepository;
 import com.velo.finance.FinanceTransaction;
 import com.velo.finance.FinanceTransactionRepository;
+import com.velo.finance.SystemCategories;
 import com.velo.gps.dto.CreateGpsTrackerRequest;
 import com.velo.gps.dto.CreateSimCardRequest;
 import com.velo.gps.dto.GpsTrackerResponse;
@@ -36,14 +36,15 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class GpsDirectoryService {
 
-    private static final String PURCHASE_CATEGORY = "Покупка оборудования";
+    private static final String PURCHASE_CATEGORY = SystemCategories.EQUIPMENT_PURCHASE;
+    private static final String SALE_CATEGORY = SystemCategories.EQUIPMENT_SALE;
     private static final Instant MIN_DATE = Instant.parse("2000-01-01T00:00:00Z");
 
     private final SimCardRepository simCardRepository;
     private final GpsTrackerRepository gpsTrackerRepository;
     private final AssetRepository assetRepository;
     private final FinanceAccountRepository financeAccountRepository;
-    private final FinanceCategoryRepository financeCategoryRepository;
+    private final SystemCategories systemCategories;
     private final FinanceTransactionRepository financeTransactionRepository;
     private final AssetEventService eventService;
 
@@ -461,7 +462,7 @@ public class GpsDirectoryService {
     }
 
     private FinanceCategory purchaseCategory() {
-        return ensureCategory(PURCHASE_CATEGORY, CategoryKind.EXPENSE);
+        return systemCategories.ensure(PURCHASE_CATEGORY, CategoryKind.EXPENSE);
     }
 
     /** Дата покупки: не раньше 2000 года (опечатки) и не в будущем. */
@@ -475,16 +476,6 @@ public class GpsDirectoryService {
     }
 
     private FinanceCategory saleCategory() {
-        return ensureCategory("Продажа оборудования", CategoryKind.INCOME);
-    }
-
-    private FinanceCategory ensureCategory(String name, CategoryKind kind) {
-        return financeCategoryRepository.findByNameAndKind(name, kind)
-                .orElseGet(() -> {
-                    FinanceCategory created = new FinanceCategory();
-                    created.setName(name);
-                    created.setKind(kind);
-                    return financeCategoryRepository.save(created);
-                });
+        return systemCategories.ensure(SALE_CATEGORY, CategoryKind.INCOME);
     }
 }

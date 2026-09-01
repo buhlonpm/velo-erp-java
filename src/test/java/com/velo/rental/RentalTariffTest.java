@@ -94,6 +94,47 @@ class RentalTariffTest {
                 .andExpect(jsonPath("$.schedule.length()").value(26));
     }
 
+    /**
+     * Тариф под выкуп: один на модель, строго недельный, живёт рядом с недельным
+     * тарифом аренды (уникальность по model+name+unit+kind).
+     */
+    @Test
+    void buyoutTariffRules() throws Exception {
+        String admin = login();
+        String modelId = extract(postJson(admin, "/api/bike-models",
+                        "{\"brand\":\"Wenbox\",\"model\":\"BO1\",\"specs\":\"48V 20Ah\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // недельный тариф аренды
+        postJson(admin, "/api/tariffs",
+                        "{\"modelId\":\"" + modelId + "\",\"name\":\"Недельный\",\"unit\":\"week\","
+                                + "\"price\":3000}")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.kind").value("rent"));
+
+        // тариф под выкуп — недельный, ок
+        postJson(admin, "/api/tariffs",
+                        "{\"modelId\":\"" + modelId + "\",\"name\":\"Под выкуп\",\"unit\":\"week\","
+                                + "\"price\":3500,\"kind\":\"rent_to_own\"}")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.kind").value("rent_to_own"));
+
+        // второй тариф под выкуп — 409
+        postJson(admin, "/api/tariffs",
+                        "{\"modelId\":\"" + modelId + "\",\"name\":\"Под выкуп 2\",\"unit\":\"week\","
+                                + "\"price\":4000,\"kind\":\"rent_to_own\"}")
+                .andExpect(status().isConflict());
+
+        // тариф под выкуп не в неделях — 409
+        String modelId2 = extract(postJson(admin, "/api/bike-models",
+                        "{\"brand\":\"Wenbox\",\"model\":\"BO2\",\"specs\":\"48V 20Ah\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/tariffs",
+                        "{\"modelId\":\"" + modelId2 + "\",\"name\":\"Под выкуп\",\"unit\":\"day\","
+                                + "\"price\":500,\"kind\":\"rent_to_own\"}")
+                .andExpect(status().isConflict());
+    }
+
     private String createBike(String token, String modelId, String inventoryNumber, String purchase)
             throws Exception {
         return extract(postJson(token, "/api/assets",

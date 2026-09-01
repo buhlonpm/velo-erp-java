@@ -111,6 +111,15 @@ class RentalBuyoutTest {
                 .andExpect(jsonPath("$.schedule[1].amount").value(3000))
                 .andExpect(jsonPath("$.schedule.length()").value(11));
 
+        // платёж по выкупу идёт по своей системной статье, а не по «Оплата аренды»
+        String transaction = getJson(admin, "/api/finance/transactions?rentalId=" + rental);
+        assertThat(transaction).contains("\"comment\":\"Платёж по выкупу\"");
+        String categories = getJson(admin, "/api/finance/categories");
+        Matcher buyoutCategory = Pattern.compile(
+                "\\{\"id\":\"([^\"]+)\",\"name\":\"Платёж по выкупу\"").matcher(categories);
+        assertThat(buyoutCategory.find()).as("системная статья «Платёж по выкупу»").isTrue();
+        assertThat(transaction).contains("\"categoryId\":\"" + buyoutCategory.group(1) + "\"");
+
         String body = getJson(admin, "/api/rentals/" + rental);
         Instant endAfter = Instant.parse(extract(body, "plannedEndAt"));
         // срок сократился на 2 оплаченных сверх плана недели (с точностью до секунд выдачи)
