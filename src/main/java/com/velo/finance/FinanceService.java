@@ -5,6 +5,7 @@ import com.velo.asset.AssetEventRepository;
 import com.velo.asset.AssetEventService;
 import com.velo.asset.AssetEventType;
 import com.velo.asset.AssetRepository;
+import com.velo.common.exception.BadRequestException;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
 import com.velo.finance.dto.AccountOptionResponse;
@@ -224,9 +225,25 @@ public class FinanceService {
             transaction.setCategory(category);
         }
         if (request.amount() != null) {
+            // платёж по выкупу нельзя поднять выше остатка по договору — переплата ломает график
+            Rental rental = transaction.getRental();
+            if (rental != null && rental.getKind() == RentalKind.RENT_TO_OWN
+                    && transaction.getKind() == CategoryKind.INCOME) {
+                int buyoutPrice = rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0;
+                int debt = buyoutPrice
+                        - (transactionRepository.paidSumByRentalId(rental.getId()) - oldAmount);
+                if (request.amount() > debt) {
+                    throw new ConflictException("Платёж больше остатка по выкупу (" + debt + " ₽). "
+                            + "Если клиент хочет внести больше — оформите чаевые отдельной "
+                            + "приходной операцией по активу");
+                }
+            }
             transaction.setAmount(request.amount());
         }
         if (request.date() != null) {
+            if (request.date().isAfter(Instant.now())) {
+                throw new BadRequestException("Дата операции не может быть в будущем");
+            }
             transaction.setDate(request.date());
         }
         if (request.comment() != null) {

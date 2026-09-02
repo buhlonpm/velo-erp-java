@@ -512,20 +512,25 @@ public class AssetService {
                 assetId, CategoryKind.EXPENSE, PURCHASE_CATEGORY);
         int income = financeTransactionRepository.sumByAssetIdAndKind(assetId, CategoryKind.INCOME);
         // «Принёс» по арендам: для завершённых — финальные суммы позиций (оплачено − возвращено,
-        // разнесено пропорционально начисленному), для остальных — начисленное по тарифам
-        List<RentalResponse> rentals = new ArrayList<>();
+        // разнесено пропорционально начисленному), для остальных — начисленное по тарифам;
+        // в каждой аренде показываем долю именно этого актива (earnedAmount)
+        List<AssetDetailResponse.AssetRentalEntry> rentals = new ArrayList<>();
         int rentalAccrued = 0;
         for (Rental rental : rentalRepository.findAllByAssetId(assetId)) {
             int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
             int refunded = financeTransactionRepository.refundedSumByRentalId(rental.getId());
-            rentals.add(RentalResponse.from(rental, now, paid, refunded,
-                    rentalExtensionRepository.findAllByRentalIdOrderByCreatedAtAsc(rental.getId())));
             var itemAmounts = RentalAmounts.itemAmounts(rental, now, paid, refunded);
+            int earned = 0;
             for (RentalItem item : rental.getItems()) {
                 if (item.getAsset().getId().equals(assetId)) {
-                    rentalAccrued += itemAmounts.get(item.getId());
+                    earned += itemAmounts.get(item.getId());
                 }
             }
+            rentalAccrued += earned;
+            rentals.add(new AssetDetailResponse.AssetRentalEntry(
+                    RentalResponse.from(rental, now, paid, refunded,
+                            rentalExtensionRepository.findAllByRentalIdOrderByCreatedAtAsc(rental.getId())),
+                    earned));
         }
 
         // roll-up смонтированного оборудования (только для велосипеда)

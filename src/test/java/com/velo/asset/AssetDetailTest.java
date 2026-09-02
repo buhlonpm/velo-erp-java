@@ -106,6 +106,9 @@ class AssetDetailTest {
                 .andExpect(jsonPath("$.mileageLog[0].mileageKm").value(2200))
                 .andExpect(jsonPath("$.transactions.length()").value(2)) // покупка + ремонт
                 .andExpect(jsonPath("$.rentals.length()").value(1))
+                .andExpect(jsonPath("$.rentals[0].rental.amount").value(300))
+                // сколько принёс именно этот актив в этой аренде (разноска по позициям)
+                .andExpect(jsonPath("$.rentals[0].earnedAmount").value(300))
                 .andExpect(jsonPath("$.totals.purchasePrice").value(180000))
                 .andExpect(jsonPath("$.totals.expensesTotal").value(4500))
                 .andExpect(jsonPath("$.totals.rentalAccruedTotal").value(300));

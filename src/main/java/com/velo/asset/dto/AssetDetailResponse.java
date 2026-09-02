@@ -16,10 +16,14 @@ public record AssetDetailResponse(
         /** Журнал циклов перезарядки (только для АКБ). */
         List<ChargeCycleLogEntry> chargeCycleLog,
         List<TransactionResponse> transactions,
-        List<RentalResponse> rentals,
+        List<AssetRentalEntry> rentals,
         List<AssetEventResponse> events,
         Totals totals
 ) {
+    /** Аренда, в которой участвовал актив, + сколько принёс именно этот актив
+     *  (разноска пропорционально начисленному по корневым позициям, комплект = 0). */
+    public record AssetRentalEntry(RentalResponse rental, int earnedAmount) {
+    }
     public record Totals(
             /** Цена покупки самого актива (0, если не указана). */
             int purchasePrice,

@@ -14,6 +14,8 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -231,10 +233,10 @@ class RentalLifecycleTest {
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + plannedEnd + "\"}")
                 .andExpect(status().isConflict());
-        // возврат позже дня окончания — тоже 409
+        // возврат позже дня окончания — это уже будущая дата → 400 (раньше было 409 «не досрочный»)
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + Instant.parse(plannedEnd).plus(1, ChronoUnit.DAYS) + "\"}")
-                .andExpect(status().isConflict());
+                .andExpect(status().isBadRequest());
         // возврат раньше дня начала аренды → 409
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + Instant.now().minus(3, ChronoUnit.DAYS) + "\"}")
@@ -418,22 +420,28 @@ class RentalLifecycleTest {
         postJson(admin, "/api/rentals/" + rentalId + "/complete", null)
                 .andExpect(status().isConflict());
 
-        String issuedJson = postJson(admin, "/api/rentals/" + rentalId + "/issue", null)
+        // выдача задним числом (−2 дня): конец периода — вчера, чтобы «позже конца» не уходило в будущее;
+        // аренда сразу «просрочена» (display-статус, внутри она active)
+        String issuedJson = postJson(admin, "/api/rentals/" + rentalId + "/issue",
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS)
+                                .truncatedTo(ChronoUnit.SECONDS) + "\"}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.status").value("overdue"))
                 .andReturn().getResponse().getContentAsString();
         String plannedEnd = extract(issuedJson, "plannedEndAt");
 
-        // завершение без полной оплаты → 409 (сумма 1 день × 1000)
-        postJson(admin, "/api/rentals/" + rentalId + "/complete", null)
+        // завершение без полной оплаты → 409 (сумма 1 день × 1000); дата приёма = конец периода,
+        // чтобы сработала именно проверка оплаты, а не календарного дня
+        postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
                 .andExpect(status().isConflict());
         postJson(admin, "/api/rentals/" + rentalId + "/payments",
                         "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.paidAmount").value(1000));
 
-        // дата приёма в другом календарном дне (конец + 25 ч) → 409 с подсказкой про доплату и продление
-        String tooLate = Instant.parse(plannedEnd).plusSeconds(25 * 3600).toString();
+        // дата приёма в более позднем календарном дне (полночь сегодня — позже «вчерашнего» конца
+        // периода, но не в будущем) → 409 с подсказкой про доплату и продление
+        String tooLate = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toString();
         postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + tooLate + "\"}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value(
@@ -602,7 +610,11 @@ class RentalLifecycleTest {
         postJson(admin, "/api/rentals/" + completedId + "/payments",
                         "{\"amount\":1000,\"accountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated());
-        postJson(admin, "/api/rentals/" + completedId + "/issue", null).andExpect(status().isOk());
+        // выдача задним числом (−1 день): конец периода — сейчас, завершение не уходит в будущее
+        postJson(admin, "/api/rentals/" + completedId + "/issue",
+                        "{\"date\":\"" + Instant.now().minus(1, ChronoUnit.DAYS)
+                                .truncatedTo(ChronoUnit.SECONDS) + "\"}")
+                .andExpect(status().isOk());
         String plannedEnd = extract(getJson(admin, "/api/rentals/" + completedId), "plannedEndAt");
         postJson(admin, "/api/rentals/" + completedId + "/complete", "{\"date\":\"" + plannedEnd + "\"}")
                 .andExpect(status().isOk());
@@ -612,6 +624,56 @@ class RentalLifecycleTest {
                 .andExpect(status().isNoContent());
         mvc.perform(get("/api/rentals/" + completedId).header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void futureDatesRejected() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Будущее Клиент\",\"phone\":\"+7 900 000-88-88\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-LC9\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":3,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        String future = Instant.now().plus(2, ChronoUnit.DAYS).toString();
+
+        // оплата и выдача с будущей датой → 400
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":1000,\"accountId\":\"" + account + "\",\"date\":\"" + future + "\"}")
+                .andExpect(status().isBadRequest());
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", "{\"date\":\"" + future + "\"}")
+                .andExpect(status().isBadRequest());
+
+        // корректная оплата и выдача — ок
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":3000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", null).andExpect(status().isOk());
+
+        // завершение с будущей датой → 400
+        postJson(admin, "/api/rentals/" + rentalId + "/complete", "{\"date\":\"" + future + "\"}")
+                .andExpect(status().isBadRequest());
+
+        // досрочный возврат «завтра»: день валидный (раньше конца периода), но он в будущем → 400
+        String tomorrow = Instant.now().plus(1, ChronoUnit.DAYS).toString();
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return", "{\"date\":\"" + tomorrow + "\"}")
+                .andExpect(status().isBadRequest());
+
+        // правка даты принятой оплаты на будущее → 400
+        String txId = extract(getJson(admin, "/api/finance/transactions?rentalId=" + rentalId), "id");
+        mvc.perform(patch("/api/finance/transactions/" + txId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"date\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     private String login() throws Exception {

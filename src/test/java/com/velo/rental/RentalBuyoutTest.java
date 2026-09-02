@@ -480,7 +480,7 @@ class RentalBuyoutTest {
     }
 
     @Test
-    void reduceThenOverpayBeyondScheduleCompletes() throws Exception {
+    void reduceThenPayOffRemainingDebtCompletes() throws Exception {
         String admin = login();
         String account = accountId(admin);
         String customer = createCustomer(admin, "Выкуп Сверхграфика");
@@ -494,20 +494,20 @@ class RentalBuyoutTest {
                 .andExpect(status().isCreated());
         assertRemaining(admin, rental, 29000);
 
-        // платёж больше, чем осталось по уменьшенному графику: покрытие упирается в суммы
-        // строк, остаток 0, а завершение проверяет деньги (оплачено >= buyoutPrice)
+        // платёж ровно на остаток по уменьшенному графику: покрытие упирается в суммы строк,
+        // остаток 0, а завершение проверяет деньги (оплачено >= buyoutPrice)
         postJson(admin, "/api/rentals/" + rental + "/payments",
-                        "{\"amount\":40000,\"accountId\":\"" + account + "\"}")
+                        "{\"amount\":29000,\"accountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.paidAmount").value(50000));
+                .andExpect(jsonPath("$.paidAmount").value(39000));
         assertRemaining(admin, rental, 0);
         postJson(admin, "/api/rentals/" + rental + "/complete", "{}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.amount").value(50000));
+                .andExpect(jsonPath("$.amount").value(39000));
     }
 
     @Test
-    void overpayBeyondTotalWithoutStrategyCompletes() throws Exception {
+    void paymentAboveBuyoutDebtRejected() throws Exception {
         String admin = login();
         String account = accountId(admin);
         String customer = createCustomer(admin, "Выкуп Сверху");
@@ -515,8 +515,32 @@ class RentalBuyoutTest {
         String rental = createBuyout(admin, customer, bike, 39000, 13);
         postJson(admin, "/api/rentals/" + rental + "/issue", "{}").andExpect(status().isOk());
 
+        // платёж больше цены выкупа → 409 с подсказкой про чаевые (иначе ломается график)
         postJson(admin, "/api/rentals/" + rental + "/payments",
                         "{\"amount\":60000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message",
+                        org.hamcrest.Matchers.containsString("чаевые")));
+
+        // частичный платёж — ок; правка его суммы сверх остатка → 409
+        postJson(admin, "/api/rentals/" + rental + "/payments",
+                        "{\"amount\":10000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+        String payment = extract(getJson(admin, "/api/finance/transactions?rentalId=" + rental), "id");
+        mvc.perform(patch("/api/finance/transactions/" + payment)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":40000}"))
+                .andExpect(status().isConflict());
+
+        // правка в пределах остатка — ок; доплата до полной суммы и завершение выкупа
+        mvc.perform(patch("/api/finance/transactions/" + payment)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":20000}"))
+                .andExpect(status().isOk());
+        postJson(admin, "/api/rentals/" + rental + "/payments",
+                        "{\"amount\":19000,\"accountId\":\"" + account + "\"}")
                 .andExpect(status().isCreated());
         assertRemaining(admin, rental, 0);
         postJson(admin, "/api/rentals/" + rental + "/complete", "{}").andExpect(status().isOk());

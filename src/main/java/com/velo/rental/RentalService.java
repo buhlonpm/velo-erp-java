@@ -6,6 +6,7 @@ import com.velo.asset.AssetStatus;
 import com.velo.asset.BatteryAsset;
 import com.velo.asset.BikeAsset;
 import com.velo.asset.ChargerAsset;
+import com.velo.common.exception.BadRequestException;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
 import com.velo.customer.Customer;
@@ -192,7 +193,19 @@ public class RentalService {
             throw new ConflictException("Стратегия переплаты применима только к аренде под выкуп");
         }
         Instant date = request.date() != null ? request.date() : Instant.now();
+        assertNotFuture(date, "Дата оплаты");
         boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
+        if (buyout) {
+            // платежи по выкупу капаются остатком: переплата сверх цены выкупа ломает график.
+            // «На чай» — отдельной приходной операцией по активу, не через оплату аренды
+            int buyoutPrice = rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0;
+            int debt = buyoutPrice - financeTransactionRepository.paidSumByRentalId(rental.getId());
+            if (request.amount() > debt) {
+                throw new ConflictException("Платёж больше остатка по выкупу (" + debt + " ₽). "
+                        + "Если клиент хочет внести больше — оформите чаевые отдельной "
+                        + "приходной операцией по активу");
+            }
+        }
         FinanceTransaction payment = recordRentalTransaction(rental, CategoryKind.INCOME,
                 request.amount(), request.accountId(),
                 buyout ? "Платёж по выкупу" : "Оплата аренды", author, date);
@@ -368,6 +381,7 @@ public class RentalService {
             throw new ConflictException("Выдать можно только аренду-черновик");
         }
         Instant issuedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        assertNotFuture(issuedAt, "Дата выдачи");
         if (rental.getPlannedEndAt() != null) {
             long periodSeconds = rental.getPlannedEndAt().getEpochSecond() - rental.getStartAt().getEpochSecond();
             rental.setPlannedEndAt(issuedAt.plusSeconds(periodSeconds));
@@ -403,6 +417,7 @@ public class RentalService {
         }
         boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        assertNotFuture(returnedAt, buyout ? "Дата выкупа" : "Дата приёма");
         if (!buyout) {
             assertSameCalendarDay(rental, returnedAt);
         }
@@ -456,6 +471,7 @@ public class RentalService {
             }
         }
         Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        assertNotFuture(returnedAt, buyout ? "Дата расторжения" : "Дата приёма");
         if (buyout) {
             assertNotBeforeStart(rental, returnedAt);
         } else {
@@ -520,6 +536,7 @@ public class RentalService {
         }
 
         Instant now = request != null && request.date() != null ? request.date() : Instant.now();
+        assertNotFuture(now, "Дата возврата");
         item.setReturnedAt(now);
         release(item.getAsset());
         recordEvent(rental, RentalEventType.ITEM_RETURN,
@@ -816,6 +833,13 @@ public class RentalService {
                     + "только в календарные дни до дня окончания аренды");
         }
         assertNotBeforeStart(rental, returnedAt);
+    }
+
+    /** Даты документов (оплата, выдача, приём) из будущего не принимаем — как у пробега и циклов. */
+    private static void assertNotFuture(Instant date, String label) {
+        if (date.isAfter(Instant.now())) {
+            throw new BadRequestException(label + " не может быть в будущем");
+        }
     }
 
     /** Дата приёма не раньше календарного дня начала аренды (локальная дата сервера). */

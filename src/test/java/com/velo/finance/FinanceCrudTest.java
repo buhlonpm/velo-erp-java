@@ -13,6 +13,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -147,6 +148,28 @@ class FinanceCrudTest {
         mvc.perform(delete("/api/finance/transactions/" + transactionId)
                         .header("Authorization", "Bearer " + manager))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void transactionDateCannotBeInFuture() throws Exception {
+        String admin = login("admin@velo.local", "admin123");
+        String accountId = firstAccountId(admin);
+        String categoryId = createCategory(admin, "Корректировка прихода", "income");
+
+        String transactionId = extract(mvc.perform(post("/api/finance/transactions")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"" + accountId + "\",\"categoryId\":\"" + categoryId
+                                + "\",\"kind\":\"income\",\"amount\":500}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        String future = Instant.now().plusSeconds(86400).toString();
+        mvc.perform(patch("/api/finance/transactions/" + transactionId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"date\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     private void assertBalance(String token, String accountId, int expected) throws Exception {
