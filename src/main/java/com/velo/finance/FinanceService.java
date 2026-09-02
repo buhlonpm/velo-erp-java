@@ -1,6 +1,9 @@
 package com.velo.finance;
 
 import com.velo.asset.Asset;
+import com.velo.asset.AssetEventRepository;
+import com.velo.asset.AssetEventService;
+import com.velo.asset.AssetEventType;
 import com.velo.asset.AssetRepository;
 import com.velo.common.exception.ConflictException;
 import com.velo.common.exception.NotFoundException;
@@ -44,6 +47,8 @@ public class FinanceService {
     private final RentalRepository rentalRepository;
     private final RentalEventRepository rentalEventRepository;
     private final AssetRepository assetRepository;
+    private final AssetEventService assetEventService;
+    private final AssetEventRepository assetEventRepository;
 
     public List<AccountResponse> findAccounts() {
         return accountRepository.findAllByOrderByCreatedAt().stream()
@@ -183,6 +188,7 @@ public class FinanceService {
             transaction.setAsset(asset);
         }
         FinanceTransaction saved = transactionRepository.save(transaction);
+        recordAssetCreateEvent(saved, author);
         reallocateBuyoutSchedule(saved);
         return TransactionResponse.from(saved);
     }
@@ -228,8 +234,72 @@ public class FinanceService {
         }
         TransactionResponse response = TransactionResponse.from(transactionRepository.save(transaction));
         recordChangeEvent(transaction, oldAmount, oldDate, author);
+        recordAssetChangeEvent(transaction, oldAmount, oldDate, author);
         reallocateBuyoutSchedule(transaction);
         return response;
+    }
+
+    /**
+     * Событие в ленту актива при создании привязанной операции — иначе приходы/расходы
+     * по активу в его истории не видны. Системные операции (покупка/продажа) сюда не попадают:
+     * они создаются доменными действиями и уже дают события purchase/write_off.
+     */
+    private void recordAssetCreateEvent(FinanceTransaction transaction, User author) {
+        Asset asset = transaction.getAsset();
+        if (asset == null) {
+            return;
+        }
+        boolean income = transaction.getKind() == CategoryKind.INCOME;
+        String comment = (income ? "Приход: " : "Расход: ") + formatMoney(transaction.getAmount())
+                + " ₽ · " + transaction.getCategory().getName();
+        if (!transaction.getComment().isBlank()) {
+            comment += " · " + transaction.getComment();
+        }
+        assetEventService.record(asset, income ? AssetEventType.INCOME : AssetEventType.EXPENSE,
+                comment, transaction.getAmount(), transaction, author);
+    }
+
+    /** Событие в ленту актива при правке привязанной операции: что именно изменилось (сумма и/или дата). */
+    private void recordAssetChangeEvent(FinanceTransaction transaction, int oldAmount, Instant oldDate,
+                                        User author) {
+        Asset asset = transaction.getAsset();
+        if (asset == null) {
+            return;
+        }
+        boolean amountChanged = transaction.getAmount() != oldAmount;
+        boolean dateChanged = !transaction.getDate().equals(oldDate);
+        if (!amountChanged && !dateChanged) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (amountChanged) {
+            parts.add("сумма: " + formatMoney(oldAmount) + " ₽ → " + formatMoney(transaction.getAmount()) + " ₽");
+        }
+        if (dateChanged) {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                    .withZone(ZoneId.systemDefault());
+            parts.add("дата: " + formatter.format(oldDate) + " → " + formatter.format(transaction.getDate()));
+        }
+        boolean income = transaction.getKind() == CategoryKind.INCOME;
+        assetEventService.record(asset, income ? AssetEventType.INCOME : AssetEventType.EXPENSE,
+                (income ? "Приход изменён: " : "Расход изменён: ") + String.join("; ", parts),
+                transaction.getAmount(), transaction, author);
+    }
+
+    /** Событие в ленту актива при удалении привязанной операции — иначе факт удаления теряется. */
+    private void recordAssetDeleteEvent(FinanceTransaction transaction, User author) {
+        Asset asset = transaction.getAsset();
+        if (asset == null) {
+            return;
+        }
+        boolean income = transaction.getKind() == CategoryKind.INCOME;
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                .withZone(ZoneId.systemDefault());
+        assetEventService.record(asset, income ? AssetEventType.INCOME : AssetEventType.EXPENSE,
+                (income ? "Приход удалён: " : "Расход удалён: ") + formatMoney(transaction.getAmount())
+                        + " ₽ · " + transaction.getCategory().getName()
+                        + "; дата: " + formatter.format(transaction.getDate()),
+                transaction.getAmount(), null, author);
     }
 
     /** Событие в ленту аренды при правке оплаты/возврата: что именно изменилось (сумма и/или дата). */
@@ -307,7 +377,9 @@ public class FinanceService {
         }
         assertRentalNotFinished(transaction);
         recordDeleteEvent(transaction, author);
+        recordAssetDeleteEvent(transaction, author);
         rentalEventRepository.clearTransactionReference(id);
+        assetEventRepository.clearTransactionReference(id);
         transactionRepository.delete(transaction);
         reallocateBuyoutSchedule(transaction);
     }

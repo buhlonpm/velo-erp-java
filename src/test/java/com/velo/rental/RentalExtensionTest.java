@@ -90,17 +90,21 @@ class RentalExtensionTest {
                 .andExpect(jsonPath("$.status").value("active"))
                 .andExpect(jsonPath("$.plannedEndAt").value(expectedEnd));
 
-        // продление на неделю от конца периода: 3 дн + 7 дн = 10 дней × 1000; денег при продлении нет
+        // продление на 7 дней от конца периода: 3 дн + 7 дн = 10 дней × 1000; денег при продлении нет
+        // (продление — только в единице аренды: «неделя» для дневной аренды → 409)
+        postJson(admin, "/api/rentals/" + rentalId + "/extend",
+                        "{\"duration\":1,\"durationUnit\":\"week\"}")
+                .andExpect(status().isConflict());
         String expectedEndAfterExtend = startAt.plus(10, ChronoUnit.DAYS).toString();
         String extendBody = postJson(admin, "/api/rentals/" + rentalId + "/extend",
-                        "{\"duration\":1,\"durationUnit\":\"week\"}")
+                        "{\"duration\":7,\"durationUnit\":\"day\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.plannedEndAt").value(expectedEndAfterExtend))
                 .andExpect(jsonPath("$.amount").value(10000))
                 .andExpect(jsonPath("$.paidAmount").value(3000))
                 .andExpect(jsonPath("$.extensions.length()").value(1))
-                .andExpect(jsonPath("$.extensions[0].duration").value(1))
-                .andExpect(jsonPath("$.extensions[0].durationUnit").value("week"))
+                .andExpect(jsonPath("$.extensions[0].duration").value(7))
+                .andExpect(jsonPath("$.extensions[0].durationUnit").value("day"))
                 .andExpect(jsonPath("$.extensions[0].fromEndAt").value(expectedEnd))
                 .andExpect(jsonPath("$.extensions[0].toEndAt").value(expectedEndAfterExtend))
                 .andExpect(jsonPath("$.extensions[0].createdByName").isNotEmpty())
@@ -120,8 +124,8 @@ class RentalExtensionTest {
                 .andExpect(jsonPath("$[?(@.type == 'payment' && @.amount == 3000)]").exists())
                 .andExpect(jsonPath("$[?(@.type == 'payment' && @.amount == 7000)]").exists())
                 .andExpect(jsonPath("$[?(@.type == 'issued')]").exists())
-                .andExpect(jsonPath("$[?(@.type == 'extension' && @.duration == 1"
-                        + " && @.durationUnit == 'week' && @.fromEndAt == '" + expectedEnd
+                .andExpect(jsonPath("$[?(@.type == 'extension' && @.duration == 7"
+                        + " && @.durationUnit == 'day' && @.fromEndAt == '" + expectedEnd
                         + "' && @.toEndAt == '" + expectedEndAfterExtend + "' && @.amount == null)]").exists())
                 .andExpect(jsonPath("$[0].createdByName").isNotEmpty());
 
@@ -252,6 +256,11 @@ class RentalExtensionTest {
                 .isAfterOrEqualTo(beforeExtend.plus(5, ChronoUnit.DAYS))
                 .isBeforeOrEqualTo(afterExtend.plus(5, ChronoUnit.DAYS));
         String extensionId = extractExtensionId(extendBody);
+
+        // правка продления в чужой единице — 409 (только единица аренды)
+        patchJson(admin, "/api/rentals/" + rentalId + "/extensions/" + extensionId,
+                        "{\"duration\":1,\"durationUnit\":\"week\"}")
+                .andExpect(status().isConflict());
 
         // правка продления 5 дн → 3 дн: якорь тот же, конец ровно на 2 дня меньше, сумма пересчиталась
         String patchBody = patchJson(admin, "/api/rentals/" + rentalId + "/extensions/" + extensionId,

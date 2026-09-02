@@ -24,9 +24,6 @@ public class ChargerAsset extends Asset {
     @Column(name = "power_w")
     private Integer powerW;
 
-    @Column(length = 50)
-    private String connector;
-
     /** На каком велосипеде смонтирован (NULL — на складе). */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "bike_id")

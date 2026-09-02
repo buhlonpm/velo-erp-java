@@ -41,9 +41,9 @@ public class BatteryAsset extends Asset {
     @JoinColumn(name = "bundled_bike_id")
     private BikeAsset bundledBike;
 
-    /** Пробег — только ручной ввод (журнал пробега). */
-    @Column(name = "mileage_km", nullable = false)
-    private int mileageKm = 0;
+    /** Пробег — только ручной ввод (журнал пробега); пустой журнал → null. */
+    @Column(name = "mileage_km")
+    private Integer mileageKm = 0;
 
     /** Количество циклов перезарядки — ручной ввод, опционально. */
     @Column(name = "charge_cycles")

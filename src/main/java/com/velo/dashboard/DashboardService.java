@@ -10,6 +10,7 @@ import com.velo.rental.Rental;
 import com.velo.rental.RentalAmounts;
 import com.velo.rental.RentalItem;
 import com.velo.rental.RentalKind;
+import com.velo.rental.RentalExtensionRepository;
 import com.velo.rental.RentalRepository;
 import com.velo.rental.RentalSchedule;
 import com.velo.rental.RentalStatus;
@@ -22,14 +23,19 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /** Агрегация данных дашборда: считается на лету, ничего не хранится. */
 @Service
 @RequiredArgsConstructor
 public class DashboardService {
 
-    /** Доля оставшегося срока, при которой аренда считается «подходящей к концу». */
+    /** Доля оставшегося срока, при которой аренда считается «подходящей к концу».
+     *  Считается от ТЕКУЩЕГО отрезка (последнее продление или весь срок, если продлений нет),
+     *  иначе у многократно продлённой аренды уведомление загоралось бы слишком рано. */
     private static final double ENDING_SOON_THRESHOLD = 0.2;
 
     /** Для выкупа «к оплате скоро»: до ближайшего платежа по графику осталось меньше этого. */
@@ -40,6 +46,7 @@ public class DashboardService {
 
     private final AssetRepository assetRepository;
     private final RentalRepository rentalRepository;
+    private final RentalExtensionRepository rentalExtensionRepository;
     private final FinanceTransactionRepository financeTransactionRepository;
 
     @Transactional(readOnly = true)
@@ -79,8 +86,20 @@ public class DashboardService {
                 .map(rental -> toRow(rental, now))
                 .toList();
 
+        // начало текущего отрезка у продлённых аренд: якорь последнего продления
+        // (цепочка упорядочена по созданию, последнее продление всегда заканчивается в plannedEndAt)
+        List<UUID> activeRentIds = active.stream()
+                .filter(rental -> rental.getKind() == RentalKind.RENT)
+                .map(Rental::getId)
+                .toList();
+        Map<UUID, Instant> segmentStartByRental = new HashMap<>();
+        if (!activeRentIds.isEmpty()) {
+            rentalExtensionRepository.findAllByRentalIdInOrderByCreatedAtAsc(activeRentIds)
+                    .forEach(ext -> segmentStartByRental.put(ext.getRental().getId(), ext.getFromEndAt()));
+        }
+
         List<DashboardResponse.RentalRow> endingSoon = active.stream()
-                .filter(rental -> !isOverdue(rental, now) && isEndingSoon(rental, now))
+                .filter(rental -> !isOverdue(rental, now) && isEndingSoon(rental, now, segmentStartByRental))
                 // раньше заканчивается / раньше платёж — выше
                 .sorted(Comparator.comparing(rental -> soonKey(rental, now)))
                 .map(rental -> toRow(rental, now))
@@ -112,8 +131,10 @@ public class DashboardService {
     }
 
     /** «Подходит к концу» (rent) или «к оплате скоро» (rent_to_own: платёж сегодня/завтра/послезавтра).
-     *  Сравнение по календарным дням (локальная дата сервера), как и просрочка по графику. */
-    private boolean isEndingSoon(Rental rental, Instant now) {
+     *  Сравнение по календарным дням (локальная дата сервера), как и просрочка по графику.
+     *  Для rent порог — 20% от ТЕКУЩЕГО отрезка: от якоря последнего продления (или от startAt,
+     *  если продлений нет) до plannedEndAt. */
+    private boolean isEndingSoon(Rental rental, Instant now, Map<UUID, Instant> segmentStartByRental) {
         if (rental.getKind() == RentalKind.RENT_TO_OWN) {
             Instant next = RentalSchedule.nextPaymentDue(rental.getScheduleItems());
             if (next == null) {
@@ -129,12 +150,13 @@ public class DashboardService {
         if (end == null || !end.isAfter(now)) {
             return false;
         }
-        Duration total = Duration.between(rental.getStartAt(), end);
-        if (total.isZero() || total.isNegative()) {
+        Instant segmentStart = segmentStartByRental.getOrDefault(rental.getId(), rental.getStartAt());
+        Duration segment = Duration.between(segmentStart, end);
+        if (segment.isZero() || segment.isNegative()) {
             return false;
         }
         Duration remaining = Duration.between(now, end);
-        return remaining.toMillis() < total.toMillis() * ENDING_SOON_THRESHOLD;
+        return remaining.toMillis() < segment.toMillis() * ENDING_SOON_THRESHOLD;
     }
 
     /** Ключ сортировки «подходящих»: для выкупа — ближайший платёж, для аренды — конец периода. */

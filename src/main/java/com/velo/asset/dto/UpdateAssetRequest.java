@@ -27,7 +27,6 @@ public record UpdateAssetRequest(
         @Min(0) Integer voltage,
         @Min(0) Integer capacityAh,
         // charger
-        @Min(0) Integer powerW,
-        @Size(max = 50) String connector
+        @Min(0) Integer powerW
 ) {
 }

@@ -636,6 +636,9 @@ public class RentalService {
         if (rental.getPlannedEndAt() == null) {
             throw new ConflictException("Продление доступно только для аренды с фиксированным сроком");
         }
+        // Продление — только в единице аренды: иначе смешанные периоды («2 недели 20 часов»)
+        // ломают отображение и смысл тарифа; другой период = новая аренда
+        assertExtensionUnit(rental, request.durationUnit());
 
         Instant anchor = rental.getPlannedEndAt().isAfter(Instant.now())
                 ? rental.getPlannedEndAt() : Instant.now();
@@ -670,6 +673,7 @@ public class RentalService {
         if (rental.getStatus() != RentalStatus.ACTIVE) {
             throw new ConflictException("Продления можно править только у активной аренды");
         }
+        assertExtensionUnit(rental, request.durationUnit());
         RentalExtension extension = findExtension(rentalId, extensionId);
         int oldDuration = extension.getDuration();
         TariffUnit oldUnit = extension.getDurationUnit();
@@ -873,6 +877,25 @@ public class RentalService {
                 .orElse("");
         throw new ConflictException("Возврат позже дня окончания аренды: доплата " + extra + " ₽."
                 + suggestion + " примите доплату — после этого аренду можно завершить");
+    }
+
+    /** Единица срока аренды — из корневых позиций (сервер ставит её = durationUnit при создании). */
+    private static TariffUnit rentalUnit(Rental rental) {
+        return rental.getItems().stream()
+                .filter(item -> item.getParentItem() == null)
+                .map(RentalItem::getTariffUnit)
+                .findFirst()
+                .orElseThrow(() -> new ConflictException("У аренды нет позиций"));
+    }
+
+    /** Продление — строго в единице аренды; другой период = завершить и завести новую аренду. */
+    private static void assertExtensionUnit(Rental rental, TariffUnit unit) {
+        TariffUnit rentalUnit = rentalUnit(rental);
+        if (unit != rentalUnit) {
+            throw new ConflictException("Продлить можно только в единице аренды («"
+                    + durationUnitLabel(rentalUnit) + "»). Нужен другой период — "
+                    + "завершите аренду и заведите новую");
+        }
     }
 
     /** Приходная/расходная операция по аренде (оплата, возврат денег). Статья — системная, по виду договора. */

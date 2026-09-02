@@ -9,6 +9,7 @@ import com.velo.asset.dto.MileageLogEntry;
 import com.velo.asset.dto.RecordChargeCyclesRequest;
 import com.velo.asset.dto.RecordMileageRequest;
 import com.velo.asset.dto.UpdateAssetRequest;
+import com.velo.asset.dto.UpdateChargeCyclesRequest;
 import com.velo.asset.dto.UpdateMileageRequest;
 import com.velo.asset.dto.WriteOffAssetRequest;
 import com.velo.user.User;
@@ -50,8 +51,9 @@ public class AssetController {
     }
 
     @PatchMapping("/{id}")
-    public AssetResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateAssetRequest request) {
-        return assetService.update(id, request);
+    public AssetResponse update(@PathVariable UUID id, @Valid @RequestBody UpdateAssetRequest request,
+                                @AuthenticationPrincipal User author) {
+        return assetService.update(id, request, author);
     }
 
     @PostMapping("/{id}/tracker/{trackerId}")
@@ -126,6 +128,20 @@ public class AssetController {
     @GetMapping("/{id}/charge-cycles")
     public List<ChargeCycleLogEntry> chargeCycleLog(@PathVariable UUID id) {
         return assetService.chargeCycleLog(id);
+    }
+
+    @PatchMapping("/{id}/charge-cycles/{logId}")
+    public ChargeCycleLogEntry updateChargeCycleEntry(@PathVariable UUID id, @PathVariable UUID logId,
+                                                      @Valid @RequestBody UpdateChargeCyclesRequest request,
+                                                      @AuthenticationPrincipal User author) {
+        return assetService.updateChargeCycleEntry(id, logId, request, author);
+    }
+
+    @DeleteMapping("/{id}/charge-cycles/{logId}")
+    public ResponseEntity<Void> deleteChargeCycleEntry(@PathVariable UUID id, @PathVariable UUID logId,
+                                                       @AuthenticationPrincipal User author) {
+        assetService.deleteChargeCycleEntry(id, logId, author);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{id}/detail")

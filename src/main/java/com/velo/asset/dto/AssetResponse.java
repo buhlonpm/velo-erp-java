@@ -42,8 +42,7 @@ public record AssetResponse(
         UUID bundledBikeId,
         String bundledBikeName,
         // charger
-        Integer powerW,
-        String connector
+        Integer powerW
 ) {
     public static AssetResponse from(Asset asset) {
         String vin = null;
@@ -62,7 +61,6 @@ public record AssetResponse(
         UUID bundledBikeId = null;
         String bundledBikeName = null;
         Integer powerW = null;
-        String connector = null;
 
         if (asset instanceof BikeAsset bike) {
             vin = bike.getVin();
@@ -96,7 +94,6 @@ public record AssetResponse(
             }
         } else if (asset instanceof ChargerAsset charger) {
             powerW = charger.getPowerW();
-            connector = charger.getConnector();
             if (charger.getBike() != null) {
                 bikeId = charger.getBike().getId();
                 bikeName = charger.getBike().getName() + " (" + charger.getBike().getInventoryNumber() + ")";
@@ -123,6 +120,6 @@ public record AssetResponse(
                 modelId, modelName, mileageKm,
                 gpsTrackerId, gpsTrackerModel, gpsSimNumber, gpsOperator,
                 voltage, capacityAh, chargeCycles, bikeId, bikeName, bundledBikeId, bundledBikeName,
-                powerW, connector);
+                powerW);
     }
 }

@@ -267,6 +267,41 @@ class BundledAssetTest {
                 .andReturn().getResponse().getContentAsString(), "id");
     }
 
+    @Test
+    void purchaseDateChangeCascadesToBundledWithHistory() throws Exception {
+        String admin = login();
+        String bike = createBike(admin, "VIN-PDC1"); // куплен 2024-03-15
+        String battery = createBundled(admin, bike, "battery", "AKB-PDC1");
+        String charger = createBundled(admin, bike, "charger", "CHG-PDC1");
+
+        // меняем дату покупки велосипеда — комплектные наследуют каскадом
+        mvc.perform(patch("/api/assets/" + bike)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purchasedAt\":\"2024-06-20T10:00:00Z\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.purchasedAt").value("2024-06-20T10:00:00Z"));
+
+        // событие в ленте велосипеда
+        mvc.perform(get("/api/assets/" + bike + "/events").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$[*].comment",
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString(
+                                "Дата покупки изменена: 15.03.2024 → 20.06.2024"))));
+
+        // у комплектных АКБ/зарядника — своя дата изменилась и событие в их ленте
+        for (String component : new String[]{battery, charger}) {
+            mvc.perform(get("/api/assets/" + component + "/detail")
+                            .header("Authorization", "Bearer " + admin))
+                    .andExpect(jsonPath("$.asset.purchasedAt").value("2024-06-20T10:00:00Z"));
+            mvc.perform(get("/api/assets/" + component + "/events")
+                            .header("Authorization", "Bearer " + admin))
+                    .andExpect(jsonPath("$[*].comment",
+                            org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString(
+                                    "Дата покупки изменена (в комплекте с велосипедом): "
+                                            + "15.03.2024 → 20.06.2024"))));
+        }
+    }
+
     private String createBundled(String token, String bikeId, String type, String inventoryNumber)
             throws Exception {
         return extract(mvc.perform(post("/api/assets")

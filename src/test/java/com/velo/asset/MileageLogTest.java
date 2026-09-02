@@ -82,9 +82,9 @@ class MileageLogTest {
         recordMileage(admin, bike, "{\"mileageKm\":1300,\"recordedAt\":\"" + yesterday + "\"}")
                 .andExpect(status().isConflict());
 
-        // задним числом, но НЕ меньше текущего — ок; текущий пробег не меняется (он по последней дате)
+        // задним числом и НЕ меньше текущего — тоже 409: дата не может быть раньше последней записи
         recordMileage(admin, bike, "{\"mileageKm\":1400,\"recordedAt\":\"" + yesterday + "\"}")
-                .andExpect(status().isCreated());
+                .andExpect(status().isConflict());
         mvc.perform(get("/api/assets?type=bike").header("Authorization", "Bearer " + admin))
                 .andExpect(jsonPath("$[?(@.id == '" + bike + "')].mileageKm").value(1350));
 
@@ -92,7 +92,7 @@ class MileageLogTest {
         mvc.perform(get("/api/assets/" + bike + "/mileage")
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].mileageKm").value(1350));
     }
 
@@ -243,6 +243,65 @@ class MileageLogTest {
         mvc.perform(delete("/api/assets/" + bike + "/mileage/" + latestId)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void deletingOnlyMileageEntryResetsCacheToNull() throws Exception {
+        String admin = login();
+        String accountId = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(createAsset(admin,
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-DEL1\",\"purchasePrice\":500,"
+                                + "\"purchaseAccountId\":\"" + accountId
+                                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+
+        // сначала записываем пробег — кэш = значение записи
+        recordMileage(admin, bike, "{\"mileageKm\":1200}").andExpect(status().isCreated());
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.mileageKm").value(1200));
+
+        // удаляем единственную запись — без ошибки, кэш сбрасывается в null (журнал пуст)
+        String logId = extract(mvc.perform(get("/api/assets/" + bike + "/mileage")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString());
+        mvc.perform(delete("/api/assets/" + bike + "/mileage/" + logId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/assets/" + bike + "/detail").header("Authorization", "Bearer " + admin))
+                .andExpect(jsonPath("$.asset.mileageKm").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    void futureMileageDateRejected() throws Exception {
+        String admin = login();
+        String accountId = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(createAsset(admin,
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-FUT1\",\"purchasePrice\":500,"
+                                + "\"purchaseAccountId\":\"" + accountId
+                                + "\",\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+
+        // будущая дата при записи — 400
+        String tomorrow = Instant.now().plus(1, ChronoUnit.DAYS).toString();
+        recordMileage(admin, bike, "{\"mileageKm\":100,\"recordedAt\":\"" + tomorrow + "\"}")
+                .andExpect(status().isBadRequest());
+
+        // и при правке существующей записи — тоже 400
+        recordMileage(admin, bike, "{\"mileageKm\":100}").andExpect(status().isCreated());
+        String logId = extract(mvc.perform(get("/api/assets/" + bike + "/mileage")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString());
+        mvc.perform(patch("/api/assets/" + bike + "/mileage/" + logId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"recordedAt\":\"" + tomorrow + "\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     private org.springframework.test.web.servlet.ResultActions createAsset(String token, String body)

@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -147,6 +148,60 @@ class AssetDetailTest {
         mvc.perform(post("/api/assets/" + bike + "/tracker/" + tracker2)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void assetTransactionEventsAppearInAssetHistory() throws Exception {
+        String admin = login();
+        String account = extract(mvc.perform(get("/api/finance/accounts")
+                        .header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-E1\",\"purchasePrice\":5000,"
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\",\"purchaseAccountId\":\""
+                                + account + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String category = extract(postJson(admin, "/api/finance/categories",
+                        "{\"name\":\"Ремонт вилки\",\"kind\":\"expense\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // создание операции по активу → событие в ленте актива
+        String transactionId = extract(postJson(admin, "/api/finance/transactions",
+                        "{\"accountId\":\"" + account + "\",\"categoryId\":\"" + category
+                                + "\",\"kind\":\"expense\",\"amount\":1500,\"assetId\":\"" + bike + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        String events = mvc.perform(get("/api/assets/" + bike + "/events")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(events).contains("\"type\":\"expense\"")
+                .contains("Расход: 1 500 ₽ · Ремонт вилки")
+                .contains(transactionId);
+
+        // правка суммы → событие об изменении
+        mvc.perform(patch("/api/finance/transactions/" + transactionId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":2000}"))
+                .andExpect(status().isOk());
+        String afterEdit = mvc.perform(get("/api/assets/" + bike + "/events")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(afterEdit).contains("Расход изменён: сумма: 1 500 ₽ → 2 000 ₽");
+
+        // удаление → событие об удалении, ссылка на операцию снята (FK не мешает удалению)
+        mvc.perform(delete("/api/finance/transactions/" + transactionId)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+        String afterDelete = mvc.perform(get("/api/assets/" + bike + "/events")
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(afterDelete).contains("Расход удалён: 2 000 ₽ · Ремонт вилки")
+                .doesNotContain(transactionId);
     }
 
     private org.springframework.test.web.servlet.ResultActions postJson(String token, String path, String body)

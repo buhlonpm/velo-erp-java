@@ -33,9 +33,9 @@ public class BikeAsset extends Asset {
     @Column(name = "vin")
     private String vin;
 
-    /** Текущий пробег — кэш последней записи из bike_mileage_logs. */
-    @Column(name = "mileage_km", nullable = false)
-    private int mileageKm = 0;
+    /** Текущий пробег — кэш последней записи журнала; пустой журнал → null. */
+    @Column(name = "mileage_km")
+    private Integer mileageKm = 0;
 
     /** Опциональный GPS-трекер из справочника. */
     @ManyToOne(fetch = FetchType.LAZY)

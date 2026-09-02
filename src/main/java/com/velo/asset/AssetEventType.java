@@ -11,7 +11,10 @@ public enum AssetEventType {
     UNMOUNT("unmount"),
     TRACKER_INSTALL("tracker_install"),
     TRACKER_REMOVE("tracker_remove"),
-    WRITE_OFF("write_off");
+    WRITE_OFF("write_off"),
+    /** Привязанная финансовая операция: приход/расход (создание, правка, удаление — по комментарию). */
+    INCOME("income"),
+    EXPENSE("expense");
 
     private final String value;
 
