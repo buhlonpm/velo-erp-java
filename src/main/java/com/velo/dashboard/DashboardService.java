@@ -86,7 +86,7 @@ public class DashboardService {
                 .map(rental -> toRow(rental, now))
                 .toList();
 
-        // начало текущего отрезка у продлённых аренд: якорь последнего продления
+        // начало текущего отрезка у продлённых аренд: конец периода до последнего продления
         // (цепочка упорядочена по созданию, последнее продление всегда заканчивается в plannedEndAt)
         List<UUID> activeRentIds = active.stream()
                 .filter(rental -> rental.getKind() == RentalKind.RENT)
@@ -94,8 +94,11 @@ public class DashboardService {
                 .toList();
         Map<UUID, Instant> segmentStartByRental = new HashMap<>();
         if (!activeRentIds.isEmpty()) {
+            // начало текущего отрезка — fromEndAt последнего продления (конец периода,
+            // от которого оно отталкивалось; продление всегда прибавляет срок к нему)
             rentalExtensionRepository.findAllByRentalIdInOrderByCreatedAtAsc(activeRentIds)
-                    .forEach(ext -> segmentStartByRental.put(ext.getRental().getId(), ext.getFromEndAt()));
+                    .forEach(ext -> segmentStartByRental.put(ext.getRental().getId(),
+                            ext.getFromEndAt()));
         }
 
         List<DashboardResponse.RentalRow> endingSoon = active.stream()
@@ -131,8 +134,9 @@ public class DashboardService {
     }
 
     /** «Подходит к концу» (rent) или «к оплате скоро» (rent_to_own: платёж сегодня/завтра/послезавтра).
-     *  Сравнение по календарным дням (локальная дата сервера), как и просрочка по графику.
-     *  Для rent порог — 20% от ТЕКУЩЕГО отрезка: от якоря последнего продления (или от startAt,
+     *  Горизонт «к оплате скоро» — по календарным дням (локальная дата сервера), а сама просрочка
+     *  по графику — поминутная (RentalSchedule.states).
+     *  Для rent порог — 20% от ТЕКУЩЕГО отрезка: от fromEndAt последнего продления (или от startAt,
      *  если продлений нет) до plannedEndAt. */
     private boolean isEndingSoon(Rental rental, Instant now, Map<UUID, Instant> segmentStartByRental) {
         if (rental.getKind() == RentalKind.RENT_TO_OWN) {

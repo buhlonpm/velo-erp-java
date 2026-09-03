@@ -39,6 +39,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -380,7 +381,10 @@ public class RentalService {
         if (rental.getStatus() != RentalStatus.DRAFT) {
             throw new ConflictException("Выдать можно только аренду-черновик");
         }
-        Instant issuedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        // дефолт «сейчас» усечён до минут (точность datetime-local) — иначе наносекунды
+        // в датах документов ломают целочисленность периода (срок в часах, лишний ceil)
+        Instant issuedAt = request != null && request.date() != null
+                ? request.date() : Instant.now().truncatedTo(ChronoUnit.MINUTES);
         assertNotFuture(issuedAt, "Дата выдачи");
         if (rental.getPlannedEndAt() != null) {
             long periodSeconds = rental.getPlannedEndAt().getEpochSecond() - rental.getStartAt().getEpochSecond();
@@ -416,7 +420,8 @@ public class RentalService {
             throw new ConflictException("Завершить можно только выданную аренду");
         }
         boolean buyout = rental.getKind() == RentalKind.RENT_TO_OWN;
-        Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        Instant returnedAt = request != null && request.date() != null
+                ? request.date() : Instant.now().truncatedTo(ChronoUnit.MINUTES);
         assertNotFuture(returnedAt, buyout ? "Дата выкупа" : "Дата приёма");
         if (!buyout) {
             assertSameCalendarDay(rental, returnedAt);
@@ -470,7 +475,8 @@ public class RentalService {
                 throw new ConflictException("Укажите счёт, с которого вернуть деньги");
             }
         }
-        Instant returnedAt = request != null && request.date() != null ? request.date() : Instant.now();
+        Instant returnedAt = request != null && request.date() != null
+                ? request.date() : Instant.now().truncatedTo(ChronoUnit.MINUTES);
         assertNotFuture(returnedAt, buyout ? "Дата расторжения" : "Дата приёма");
         if (buyout) {
             assertNotBeforeStart(rental, returnedAt);
@@ -635,10 +641,12 @@ public class RentalService {
     }
 
     /**
-     * Продление: якорь = max(plannedEndAt, сейчас) — у просроченной аренды продлеваем от текущего
-     * момента, иначе новый конец уехал бы в прошлое и сумма не выросла. Новый конец = якорь +
-     * duration × unit. Продление хранится отдельной записью (можно править/удалять с пересчётом),
-     * денег не двигает — оплата принимается отдельно через платежи. Событие со сдвигом срока — в ленту.
+     * Продление: новый конец = plannedEndAt + duration × unit — ВСЕГДА от текущего конца периода,
+     * без якоря «сейчас»: логика одинакова для активной и просроченной аренды. Просрочка
+     * деньгами не досчитывается, поэтому и накапливать её в срок не нужно. fromEndAt продления —
+     * конец периода до продления: только так удаление продления может вернуть исходный срок.
+     * Продление хранится отдельной записью (можно править/удалять с пересчётом), денег не двигает —
+     * оплата принимается отдельно через платежи. Событие со сдвигом срока — в ленту.
      */
     @Transactional
     public RentalResponse extend(UUID rentalId, ExtendRentalRequest request, User author) {
@@ -657,15 +665,15 @@ public class RentalService {
         // ломают отображение и смысл тарифа; другой период = новая аренда
         assertExtensionUnit(rental, request.durationUnit());
 
-        Instant anchor = rental.getPlannedEndAt().isAfter(Instant.now())
-                ? rental.getPlannedEndAt() : Instant.now();
-        Instant toEnd = anchor.plusSeconds(request.duration() * request.durationUnit().getSeconds());
+        Instant previousEnd = rental.getPlannedEndAt();
+        Instant toEnd = previousEnd
+                .plusSeconds(request.duration() * request.durationUnit().getSeconds());
 
         RentalExtension extension = new RentalExtension();
         extension.setRental(rental);
         extension.setDuration(request.duration());
         extension.setDurationUnit(request.durationUnit());
-        extension.setFromEndAt(anchor);
+        extension.setFromEndAt(previousEnd);
         extension.setToEndAt(toEnd);
         extension.setCreatedBy(author);
         rentalExtensionRepository.save(extension);
@@ -675,7 +683,7 @@ public class RentalService {
 
         recordExtensionEvent(saved,
                 "Продление на " + request.duration() + " × " + durationUnitLabel(request.durationUnit()),
-                request.duration(), request.durationUnit(), anchor, toEnd, author);
+                request.duration(), request.durationUnit(), previousEnd, toEnd, author);
         return toResponse(saved, Instant.now());
     }
 
@@ -711,7 +719,8 @@ public class RentalService {
 
     /**
      * Удаление продления (только у активной аренды): цепочка оставшихся пересчитывается;
-     * если продлений не осталось — конец возвращается к якорю удалённого.
+     * если продлений не осталось — конец возвращается к концу периода до удалённого продления
+     * (fromEndAt; у первого продления — исходный plannedEndAt аренды).
      */
     @Transactional
     public RentalResponse deleteExtension(UUID rentalId, UUID extensionId, User author) {
@@ -766,8 +775,11 @@ public class RentalService {
     }
 
     /**
-     * Пересчёт цепочки продлений по порядку создания: база — якорь (fromEndAt) самого раннего,
-     * каждое следующее продлевается от конца предыдущего; итоговый конец — plannedEndAt аренды.
+     * Пересчёт цепочки продлений по порядку создания: база — fromEndAt самого раннего (конец
+     * периода до первого продления), каждое продление отталкивается от конца предыдущего —
+     * просто сумма длительностей, без якоря «сейчас». Итоговый конец — plannedEndAt аренды.
+     * Формула детерминирована, поэтому правка/удаление любого звена воспроизводит цепочку
+     * «как будто так и было».
      */
     private void recalcExtensionChain(Rental rental) {
         recalcExtensionChain(rental,
@@ -869,8 +881,9 @@ public class RentalService {
 
     /**
      * Обычное завершение — только в календарный день окончания аренды (локальная дата сервера).
-     * Позже: считаем доплату и отправляем продлевать; раньше: это сценарий досрочного возврата.
-     * Только для rent; rent_to_own завершается в любой день при полной оплате.
+     * Позже: отправляем продлевать (сумма аренды фиксированная, просрочка деньгами не
+     * досчитывается — продление сдвинет конец и пересчитает сумму); раньше: это сценарий
+     * досрочного возврата. Только для rent; rent_to_own завершается в любой день при полной оплате.
      */
     private void assertSameCalendarDay(Rental rental, Instant returnedAt) {
         if (rental.getPlannedEndAt() == null) {
@@ -886,7 +899,6 @@ public class RentalService {
             throw new ConflictException("Дата приёма раньше дня окончания аренды. Если клиент вернул "
                     + "технику раньше и просит деньги — оформите «Вернуть досрочно»");
         }
-        int extra = rentalAmount(rental, returnedAt) - rentalAmount(rental, rental.getPlannedEndAt());
         String suggestion = rental.getItems().stream()
                 .filter(item -> item.getParentItem() == null)
                 .findFirst()
@@ -896,11 +908,11 @@ public class RentalService {
                     long unitSeconds = item.getTariffUnit().getSeconds();
                     long units = (gapSeconds + unitSeconds - 1) / unitSeconds;
                     return " Продлите аренду на " + units + " × "
-                            + durationUnitLabel(item.getTariffUnit()) + ",";
+                            + durationUnitLabel(item.getTariffUnit()) + " —";
                 })
                 .orElse("");
-        throw new ConflictException("Возврат позже дня окончания аренды: доплата " + extra + " ₽."
-                + suggestion + " примите доплату — после этого аренду можно завершить");
+        throw new ConflictException("Возврат позже дня окончания аренды." + suggestion
+                + " после этого аренду можно завершить");
     }
 
     /** Единица срока аренды — из корневых позиций (сервер ставит её = durationUnit при создании). */

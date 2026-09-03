@@ -34,15 +34,16 @@ public final class RentalSchedule {
     public record RowState(RentalScheduleItem item, RowStatus status) {
     }
 
-    /** Статус каждой строки по хранимому покрытию. Просрочка — по календарному дню
-     *  (локальная дата сервера): платёж «на сегодня» не просрочен. */
+    /** Статус каждой строки по хранимому покрытию. Просрочка — с точностью до МИНУТЫ
+     *  (точность datetime-local в UI): платёж просрочен, как только его минута прошла —
+     *  как у обычной аренды по plannedEndAt. */
     public static List<RowState> states(List<RentalScheduleItem> items, Instant now) {
-        LocalDate today = now.atZone(ZoneId.systemDefault()).toLocalDate();
+        Instant nowMinute = now.truncatedTo(ChronoUnit.MINUTES);
         List<RowState> result = new ArrayList<>();
         boolean nextMarked = false;
         for (RentalScheduleItem item : items) {
-            boolean pastDue = item.getDueDate().atZone(ZoneId.systemDefault())
-                    .toLocalDate().isBefore(today);
+            boolean pastDue = item.getDueDate().truncatedTo(ChronoUnit.MINUTES)
+                    .isBefore(nowMinute);
             RowStatus status;
             if (item.getCoveredAmount() >= item.getAmount()) {
                 status = RowStatus.PAID;

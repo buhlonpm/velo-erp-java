@@ -65,15 +65,15 @@ public class RentalItem {
     }
 
     /**
-     * Стоимость позиции: предоплаченный период (startAt → plannedEndAt) целиком;
-     * просрочка за периодом досчитывается по факту. Минимум 1 единица тарифа.
+     * Стоимость позиции — всегда фиксированная по периоду аренды (startAt → plannedEndAt),
+     * в любом статусе. Просрочка деньгами НЕ досчитывается: просроченную аренду либо завершают
+     * в календарный день окончания, либо продлевают — тогда plannedEndAt сдвигается и сумма
+     * пересчитывается. Минимум 1 единица тарифа.
      */
     public int amount(Instant now) {
-        Instant end = returnedAt != null ? returnedAt : now;
-        Instant periodEnd = rental.getPlannedEndAt();
-        if (periodEnd != null && periodEnd.isAfter(end)) {
-            end = periodEnd;
-        }
+        Instant end = rental.getPlannedEndAt() != null
+                ? rental.getPlannedEndAt()
+                : (returnedAt != null ? returnedAt : now);
         return amountForPeriod(end);
     }
 

@@ -55,20 +55,21 @@ class DashboardEndingSoonTest {
                 "{\"fullName\":\"Продл Клиент\",\"phone\":\"+7 900 000-22-22\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // недельная аренда, выданная 5 недель назад; просрочена и продлена ещё на неделю от «сейчас»
+        // недельная аренда, выданная 34 дня назад (просрочена) и продленная на 5 недель
+        // ОТ КОНЦА периода: конец = 34д-7д назад + 5 нед = now + 8 дней
         String rental = extract(postJson(admin, "/api/rentals",
                 "{\"customerId\":\"" + customer + "\",\"duration\":1,\"durationUnit\":\"week\","
                         + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":7000}]}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
         postJson(admin, "/api/rentals/" + rental + "/issue",
-                "{\"date\":\"" + Instant.now().minus(35, ChronoUnit.DAYS) + "\"}")
+                "{\"date\":\"" + Instant.now().minus(34, ChronoUnit.DAYS) + "\"}")
                 .andExpect(status().isOk());
         postJson(admin, "/api/rentals/" + rental + "/extend",
-                "{\"duration\":1,\"durationUnit\":\"week\"}")
+                "{\"duration\":5,\"durationUnit\":\"week\"}")
                 .andExpect(status().isOk());
 
-        // суммарный срок 6 недель, до конца 7 дней: от ВСЕГО срока это < 20% (ложное «подходит к концу»),
-        // от последнего отрезка (неделя продления) — нет, уведомления быть не должно
+        // суммарный срок 6 недель, до конца 8 дней: от ВСЕГО срока это < 20% (ложное «подходит к концу»),
+        // от последнего отрезка (5 недель продления) — 8/35 > 20%, уведомления быть не должно
         mvc.perform(get("/api/dashboard").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.endingSoon[?(@.id == '" + rental + "')]").doesNotExist())

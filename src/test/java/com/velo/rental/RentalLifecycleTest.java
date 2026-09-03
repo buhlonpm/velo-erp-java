@@ -142,6 +142,41 @@ class RentalLifecycleTest {
     }
 
     @Test
+    void draftDoesNotAccrueOverduePastPlannedEnd() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Прошлый Клиент\",\"phone\":\"+7 900 000-77-77\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-OLD1\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+
+        // Черновик завели месяц назад на 2 дня и не выдали: сумма = ровно предоплаченный
+        // период (2 × 1000), просрочка за периодом на черновик не начисляется
+        String startAt = Instant.now().minus(30, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS).toString();
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"startAt\":\"" + startAt + "\","
+                                + "\"duration\":2,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("draft"))
+                .andExpect(jsonPath("$.amount").value(2000))
+                .andReturn().getResponse().getContentAsString(), "id");
+        mvc.perform(get("/api/rentals/" + rentalId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.amount").value(2000));
+
+        // при выдаче старт сдвигается на сейчас — начисление идёт от выдачи, сумма прежняя
+        postJson(admin, "/api/rentals/" + rentalId + "/issue", "{}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("active"))
+                .andExpect(jsonPath("$.amount").value(2000));
+    }
+
+    @Test
     void issueWithoutPaymentAndEarlyReturn() throws Exception {
         String admin = login();
         String account = extract(getJson(admin, "/api/finance/accounts"), "id");

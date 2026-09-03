@@ -203,12 +203,13 @@ class RentalExtensionTest {
     }
 
     /**
-     * Баг: аренда создана задним числом и просрочена — продление обязано отталкиваться
-     * от max(plannedEndAt, сейчас), иначе новый конец остаётся в прошлом и сумма не растёт.
-     * Плюс правка/удаление продления с пересчётом срока и суммы.
+     * Просроченная аренда (создана задним числом): сумма фиксированная по периоду,
+     * просрочка деньгами не досчитывается. Продление ВСЕГДА прибавляет срок к текущему концу
+     * аренды (plannedEndAt + N×unit), без якоря «сейчас» — логика одинакова для активной
+     * и просроченной аренды. Плюс правка/удаление продления с пересчётом срока и суммы.
      */
     @Test
-    void extendOverdueRentalAnchorsToNow() throws Exception {
+    void extendOverdueRentalExtendsFromPlannedEnd() throws Exception {
         String admin = login();
         String account = extract(getJson(admin, "/api/finance/accounts"), "id");
         String bike = extract(postJson(admin, "/api/assets",
@@ -220,8 +221,11 @@ class RentalExtensionTest {
                         "{\"fullName\":\"Просрочка Клиент\",\"phone\":\"+7 900 000-66-66\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
 
-        // аренда задним числом: старт 10 дней назад, срок 2 дня → 8 дней просрочки
-        Instant startAt = Instant.now().minus(10, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
+        // аренда задним числом: старт 10 дней назад, срок 2 дня → 8 дней просрочки.
+        // Буфер в час: elapsed должен стоять далеко от границы суток, иначе тест флакует —
+        // между выдачей и продлением elapsed может перескочить на следующие сутки (ceil)
+        Instant startAt = Instant.now().minus(10, ChronoUnit.DAYS).minus(1, ChronoUnit.HOURS)
+                .truncatedTo(ChronoUnit.SECONDS);
         String rentalBody = postJson(admin, "/api/rentals",
                         "{\"customerId\":\"" + customer + "\",\"startAt\":\"" + startAt + "\","
                                 + "\"duration\":2,\"durationUnit\":\"day\","
@@ -231,30 +235,26 @@ class RentalExtensionTest {
                 .andReturn().getResponse().getContentAsString();
         String rentalId = extract(rentalBody, "id");
 
-        // выдача той же датой — период не сдвигается; аренда просрочена, сумма по факту elapsed
-        String issueBody = postJson(admin, "/api/rentals/" + rentalId + "/issue",
+        // выдача той же датой — период не сдвигается; аренда просрочена, но сумма
+        // фиксированная по периоду (2 дня × 1000) — просрочка деньгами не досчитывается
+        postJson(admin, "/api/rentals/" + rentalId + "/issue",
                         "{\"date\":\"" + startAt + "\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("overdue"))
-                .andReturn().getResponse().getContentAsString();
-        int amountBefore = extractInt(issueBody, "amount");
+                .andExpect(jsonPath("$.amount").value(2000));
 
-        // продление просроченной: якорь = сейчас → конец ≈ now + 5 дн, сумма растёт ровно на 5 × 1000
-        Instant beforeExtend = Instant.now();
+        // продление просроченной: конец = исходный конец + 5 дн = startAt + 7 дн,
+        // сумма 7 суток × 1000 — просрочка в срок и сумму не входит
         String extendBody = postJson(admin, "/api/rentals/" + rentalId + "/extend",
                         "{\"duration\":5,\"durationUnit\":\"day\"}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.amount").value(amountBefore + 5000))
+                .andExpect(jsonPath("$.plannedEndAt").value(startAt.plus(7, ChronoUnit.DAYS).toString()))
+                .andExpect(jsonPath("$.amount").value(7000))
                 .andExpect(jsonPath("$.extensions.length()").value(1))
                 .andExpect(jsonPath("$.extensions[0].duration").value(5))
                 .andExpect(jsonPath("$.extensions[0].durationUnit").value("day"))
                 .andExpect(jsonPath("$.extensions[0].createdByName").isNotEmpty())
                 .andReturn().getResponse().getContentAsString();
-        Instant afterExtend = Instant.now();
-        Instant endAfterExtend = Instant.parse(extract(extendBody, "plannedEndAt"));
-        assertThat(endAfterExtend)
-                .isAfterOrEqualTo(beforeExtend.plus(5, ChronoUnit.DAYS))
-                .isBeforeOrEqualTo(afterExtend.plus(5, ChronoUnit.DAYS));
         String extensionId = extractExtensionId(extendBody);
 
         // правка продления в чужой единице — 409 (только единица аренды)
@@ -262,25 +262,26 @@ class RentalExtensionTest {
                         "{\"duration\":1,\"durationUnit\":\"week\"}")
                 .andExpect(status().isConflict());
 
-        // правка продления 5 дн → 3 дн: якорь тот же, конец ровно на 2 дня меньше, сумма пересчиталась
+        // правка продления 5 дн → 3 дн: конец = startAt + 5 дн, сумма пересчиталась (5 × 1000)
         String patchBody = patchJson(admin, "/api/rentals/" + rentalId + "/extensions/" + extensionId,
                         "{\"duration\":3,\"durationUnit\":\"day\"}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.amount").value(amountBefore + 3000))
+                .andExpect(jsonPath("$.amount").value(5000))
                 .andExpect(jsonPath("$.extensions.length()").value(1))
                 .andExpect(jsonPath("$.extensions[0].duration").value(3))
                 .andReturn().getResponse().getContentAsString();
         assertThat(Instant.parse(extract(patchBody, "plannedEndAt")))
-                .isEqualTo(endAfterExtend.minus(2, ChronoUnit.DAYS));
+                .isEqualTo(startAt.plus(5, ChronoUnit.DAYS));
 
-        // удаление продления: конец возвращается к якорю (≈ моменту продления), сумма — как до продления
+        // удаление продления: конец возвращается к ИСХОДНОМУ концу периода (startAt + 2 дня),
+        // сумма — обратно к фиксированной по периоду (2 × 1000), как будто продления не было
         String deleteBody = deleteJson(admin, "/api/rentals/" + rentalId + "/extensions/" + extensionId)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.amount").value(amountBefore))
+                .andExpect(jsonPath("$.amount").value(2000))
                 .andExpect(jsonPath("$.extensions.length()").value(0))
                 .andReturn().getResponse().getContentAsString();
         assertThat(Instant.parse(extract(deleteBody, "plannedEndAt")))
-                .isEqualTo(endAfterExtend.minus(5, ChronoUnit.DAYS));
+                .isEqualTo(startAt.plus(2, ChronoUnit.DAYS));
 
         // лента: создание, выдача, продление, правка, удаление
         mvc.perform(get("/api/rentals/" + rentalId + "/events").header("Authorization", "Bearer " + admin))
@@ -375,12 +376,6 @@ class RentalExtensionTest {
             found = matcher.group(1);
         }
         return found;
-    }
-
-    private static int extractInt(String json, String field) {
-        Matcher matcher = Pattern.compile("\"" + field + "\":(\\d+)").matcher(json);
-        assertThat(matcher.find()).isTrue();
-        return Integer.parseInt(matcher.group(1));
     }
 
     /** id первого продления в ответе аренды (поле extensions в конце, после позиций). */

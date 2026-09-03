@@ -373,6 +373,32 @@ class RentalBuyoutTest {
         assertThat(extractIds(dashboard, "overdue")).doesNotContain(soonRental);
     }
 
+    /** Просрочка выкупа — поминутная, как у обычной аренды: платёж, чьё время прошло
+     *  хотя бы на минуту, — просрочен (и строка графика, и display-статус аренды). */
+    @Test
+    void buyoutPaymentOverdueByMinutePrecision() throws Exception {
+        String admin = login();
+        String account = accountId(admin);
+        String customer = createCustomer(admin, "Выкуп Просрочка Мин");
+        String bike = createBike(admin, account, "VIN-BO-MIN");
+
+        // выкуп, выданный 2 часа назад; первый платёж (на момент выдачи) не внесён
+        Instant startAt = Instant.now().minus(2, ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS);
+        String rental = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"kind\":\"rent_to_own\","
+                                + "\"buyoutPrice\":39000,\"termWeeks\":13,"
+                                + "\"startAt\":\"" + startAt + "\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":3000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + rental + "/issue", "{\"date\":\"" + startAt + "\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("overdue"))
+                .andExpect(jsonPath("$.schedule[0].status").value("overdue"))
+                .andExpect(jsonPath("$.schedule[1].status").value("next"));
+
+        assertThat(extractIds(getJson(admin, "/api/dashboard"), "overdue")).contains(rental);
+    }
+
     // --- регрессия: переплата со стратегией «поглощается» перестройкой графика (строки
     // удаляются/уменьшаются), и поглощённые деньги НЕ должны заново гасить новые строки
     // при следующих платежах (бюджет FIFO = оплачено − absorbed). Инвариант после КАЖДОЙ
