@@ -4,6 +4,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -60,6 +61,28 @@ public interface FinanceTransactionRepository extends JpaRepository<FinanceTrans
     int refundedSumByRentalId(@Param("rentalId") UUID rentalId);
 
     List<FinanceTransaction> findAllByAssetIdOrderByDateDesc(UUID assetId);
+
+    /** P&L за период [from, to): суммы по статьям и типу (для отчёта). Строки: (categoryId, categoryName, kind, sum). */
+    @Query("""
+            SELECT t.category.id, t.category.name, t.kind, SUM(t.amount)
+            FROM FinanceTransaction t
+            WHERE t.date >= :from AND t.date < :to
+            GROUP BY t.category.id, t.category.name, t.kind
+            ORDER BY t.kind, t.category.name
+            """)
+    List<Object[]> pnlByCategoryBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    /** То же с фильтром по счёту. */
+    @Query("""
+            SELECT t.category.id, t.category.name, t.kind, SUM(t.amount)
+            FROM FinanceTransaction t
+            WHERE t.date >= :from AND t.date < :to AND t.account.id = :accountId
+            GROUP BY t.category.id, t.category.name, t.kind
+            ORDER BY t.kind, t.category.name
+            """)
+    List<Object[]> pnlByCategoryBetweenAndAccountId(@Param("from") Instant from,
+                                                    @Param("to") Instant to,
+                                                    @Param("accountId") UUID accountId);
 
     /** Операции по аренде (история оплат в карточке аренды). */
     List<FinanceTransaction> findAllByRentalIdOrderByDateDesc(UUID rentalId);

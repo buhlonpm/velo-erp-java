@@ -23,6 +23,7 @@ public class SystemCategories {
     public static final String RENTAL_REFUND = "Возврат по аренде";
     public static final String BUYOUT_REFUND = "Возврат по выкупу";
     public static final String MAINTENANCE = "Обслуживание и ремонт";
+    public static final String OWNER_INVESTMENT = "Введение денег в бизнес";
 
     /** Все системные статьи (имя → тип) — порядок важен для сидов. */
     public static final Map<String, CategoryKind> ALL = new LinkedHashMap<>();
@@ -35,6 +36,7 @@ public class SystemCategories {
         ALL.put(RENTAL_REFUND, CategoryKind.EXPENSE);
         ALL.put(BUYOUT_REFUND, CategoryKind.EXPENSE);
         ALL.put(MAINTENANCE, CategoryKind.EXPENSE);
+        ALL.put(OWNER_INVESTMENT, CategoryKind.INCOME);
     }
 
     private final FinanceCategoryRepository repository;

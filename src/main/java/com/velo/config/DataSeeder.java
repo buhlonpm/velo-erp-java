@@ -66,7 +66,6 @@ public class DataSeeder implements ApplicationRunner {
         SystemCategories.ALL.forEach((name, kind) -> ensureCategory(name, kind, true));
         // дефолтные пользовательские — можно удалять
         Map<String, CategoryKind> defaults = Map.of(
-                "Введение денег в бизнес", CategoryKind.INCOME,
                 "Чаевые", CategoryKind.INCOME,
                 "Зарплата", CategoryKind.EXPENSE,
                 "Реклама", CategoryKind.EXPENSE,
