@@ -23,7 +23,12 @@ public class SystemCategories {
     public static final String RENTAL_REFUND = "Возврат по аренде";
     public static final String BUYOUT_REFUND = "Возврат по выкупу";
     public static final String MAINTENANCE = "Обслуживание и ремонт";
+    public static final String BIKE_PREPARATION = "Подготовка велосипеда";
     public static final String OWNER_INVESTMENT = "Введение денег в бизнес";
+
+    /** Капекс-статьи расхода (вложения в технику) — в P&L идут отдельно от операционной прибыли. */
+    public static final java.util.Set<String> CAPEX_EXPENSE = java.util.Set.of(
+            EQUIPMENT_PURCHASE, BIKE_PREPARATION);
 
     /** Все системные статьи (имя → тип) — порядок важен для сидов. */
     public static final Map<String, CategoryKind> ALL = new LinkedHashMap<>();
@@ -36,6 +41,7 @@ public class SystemCategories {
         ALL.put(RENTAL_REFUND, CategoryKind.EXPENSE);
         ALL.put(BUYOUT_REFUND, CategoryKind.EXPENSE);
         ALL.put(MAINTENANCE, CategoryKind.EXPENSE);
+        ALL.put(BIKE_PREPARATION, CategoryKind.EXPENSE);
         ALL.put(OWNER_INVESTMENT, CategoryKind.INCOME);
     }
 

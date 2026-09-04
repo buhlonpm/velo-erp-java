@@ -23,10 +23,11 @@ public class ReportController {
 
     private final ReportService reportService;
 
-    /** Кассовый P&L за период (календарные даты, включительно), опц. фильтр по счёту. */
+    /** Кассовый P&L за период (календарные даты, включительно), опц. фильтр по счёту.
+     *  Без from — «за всё время»: старт от даты первой операции по кассе. */
     @GetMapping("/pnl")
     @PreAuthorize(CAN_VIEW_FINANCES)
-    public PnlReportResponse pnl(@RequestParam LocalDate from,
+    public PnlReportResponse pnl(@RequestParam(required = false) LocalDate from,
                                  @RequestParam LocalDate to,
                                  @RequestParam(required = false) UUID accountId) {
         return reportService.pnl(from, to, accountId);

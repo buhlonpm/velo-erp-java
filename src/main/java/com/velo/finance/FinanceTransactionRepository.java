@@ -42,6 +42,10 @@ public interface FinanceTransactionRepository extends JpaRepository<FinanceTrans
             """)
     int balanceDeltaByAccountId(@Param("accountId") UUID accountId);
 
+    /** Дата самой ранней операции по кассе (старт периода «за всё время» в отчётах). */
+    @Query("SELECT MIN(t.date) FROM FinanceTransaction t")
+    Instant findMinDate();
+
     /** Оплачено по аренде: только приходы (оплаты клиента). Возвраты — отдельно, см. refundedSumByRentalId. */
     @Query("""
             SELECT COALESCE(SUM(CASE WHEN t.kind = com.velo.finance.CategoryKind.INCOME

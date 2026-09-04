@@ -29,13 +29,18 @@ public class ReportService {
 
     @Transactional(readOnly = true)
     public PnlReportResponse pnl(LocalDate from, LocalDate to, UUID accountId) {
-        if (from == null || to == null) {
-            throw new BadRequestException("Укажите период: from и to");
+        if (to == null) {
+            throw new BadRequestException("Укажите конец периода: to");
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        if (from == null) {
+            // «За всё время»: старт от первой операции по кассе; операций нет — пустой день «to»
+            Instant minDate = transactionRepository.findMinDate();
+            from = minDate != null ? LocalDate.ofInstant(minDate, zone) : to;
         }
         if (from.isAfter(to)) {
             throw new BadRequestException("Дата начала периода позже даты конца");
         }
-        ZoneId zone = ZoneId.systemDefault();
         Instant fromInstant = from.atStartOfDay(zone).toInstant();
         Instant toInstant = to.plusDays(1).atStartOfDay(zone).toInstant();
 
@@ -58,7 +63,7 @@ public class ReportService {
                 continue;
             }
             boolean capex = kind == CategoryKind.EXPENSE
-                    ? SystemCategories.EQUIPMENT_PURCHASE.equals(categoryName)
+                    ? SystemCategories.CAPEX_EXPENSE.contains(categoryName)
                     : SystemCategories.EQUIPMENT_SALE.equals(categoryName);
             (kind == CategoryKind.INCOME ? income : expense)
                     .add(new PnlReportResponse.Row(categoryId, categoryName, total, capex));

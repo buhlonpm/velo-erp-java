@@ -139,6 +139,61 @@ class ReportPnlTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void bikePreparationIsCapex() throws Exception {
+        String admin = login("admin@velo.local", "admin123");
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        LocalDate today = LocalDate.now(ZoneId.systemDefault());
+
+        // системная статья «Подготовка велосипеда» сидится при старте
+        List<String> ids = com.jayway.jsonpath.JsonPath.read(
+                getJson(admin, "/api/finance/categories"),
+                "$[?(@.name == 'Подготовка велосипеда' && @.system == true)].id");
+        assertThat(ids).hasSize(1);
+        // удалить нельзя
+        mvc.perform(delete("/api/finance/categories/" + ids.get(0))
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isConflict());
+
+        postJson(admin, "/api/finance/transactions",
+                "{\"accountId\":\"" + account + "\",\"categoryId\":\"" + ids.get(0)
+                        + "\",\"kind\":\"expense\",\"amount\":2000}")
+                .andExpect(status().isCreated());
+
+        // в P&L — капекс: в операционную прибыль не входит, в capexOut входит
+        mvc.perform(get("/api/reports/pnl?from=" + today + "&to=" + today)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expense[?(@.categoryName == 'Подготовка велосипеда'"
+                        + " && @.total == 2000 && @.capex == true)]").exists())
+                .andExpect(jsonPath("$.expenseTotal").value(
+                        org.hamcrest.Matchers.greaterThanOrEqualTo(2000)))
+                .andExpect(jsonPath("$.capexOut").value(
+                        org.hamcrest.Matchers.greaterThanOrEqualTo(2000)));
+    }
+
+    @Test
+    void pnlWithoutFromStartsFromFirstTransaction() throws Exception {
+        String admin = login("admin@velo.local", "admin123");
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        LocalDate today = LocalDate.now(ZoneId.systemDefault());
+
+        // давняя операция задним числом — раньше любой другой в базе теста
+        String incomeCategory = createCategory(admin, "Отчёт Давний Доход", "income");
+        postJson(admin, "/api/finance/transactions",
+                "{\"accountId\":\"" + account + "\",\"categoryId\":\"" + incomeCategory
+                        + "\",\"kind\":\"income\",\"amount\":4200,\"date\":\"2020-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated());
+
+        // без from — «за всё время»: старт от первой операции по кассе
+        mvc.perform(get("/api/reports/pnl?to=" + today)
+                        .header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.from").value("2020-01-15"))
+                .andExpect(jsonPath("$.income[?(@.categoryName == 'Отчёт Давний Доход'"
+                        + " && @.total == 4200)]").exists());
+    }
+
     private String getJson(String token, String url) throws Exception {
         return mvc.perform(get(url).header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())

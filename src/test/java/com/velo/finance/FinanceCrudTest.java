@@ -262,6 +262,7 @@ class FinanceCrudTest {
                 .andExpect(jsonPath("$[?(@.name == 'Покупка оборудования' && @.system == true)]").exists())
                 .andExpect(jsonPath("$[?(@.name == 'Продажа оборудования' && @.system == true)]").exists())
                 .andExpect(jsonPath("$[?(@.name == 'Обслуживание и ремонт' && @.system == true)]").exists())
+                .andExpect(jsonPath("$[?(@.name == 'Подготовка велосипеда' && @.system == true)]").exists())
                 .andExpect(jsonPath("$[?(@.name == 'Чаевые' && @.system == false)]").exists())
                 .andReturn();
         String systemCategoryId = extractByName(result.getResponse().getContentAsString(), "Оплата аренды");
