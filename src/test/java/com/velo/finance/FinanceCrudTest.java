@@ -172,6 +172,42 @@ class FinanceCrudTest {
                 .andExpect(status().isBadRequest());
     }
 
+    @Test
+    void transactionDateOnCreateAndEdit() throws Exception {
+        String admin = login("admin@velo.local", "admin123");
+        String accountId = firstAccountId(admin);
+        String categoryId = createCategory(admin, "Приход задним числом", "income");
+
+        // создание с датой в прошлом — ок, дата сохраняется
+        String past = "2026-08-20T10:00:00Z";
+        String transactionId = extract(mvc.perform(post("/api/finance/transactions")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"" + accountId + "\",\"categoryId\":\"" + categoryId
+                                + "\",\"kind\":\"income\",\"amount\":500,\"date\":\"" + past + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.date").value(past))
+                .andReturn().getResponse().getContentAsString(), "id");
+
+        // создание с датой в будущем — 400
+        String future = Instant.now().plusSeconds(86400).toString();
+        mvc.perform(post("/api/finance/transactions")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"" + accountId + "\",\"categoryId\":\"" + categoryId
+                                + "\",\"kind\":\"income\",\"amount\":500,\"date\":\"" + future + "\"}"))
+                .andExpect(status().isBadRequest());
+
+        // правка даты на другую прошлую — ок
+        String earlier = "2026-08-01T09:30:00Z";
+        mvc.perform(patch("/api/finance/transactions/" + transactionId)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"date\":\"" + earlier + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.date").value(earlier));
+    }
+
     private void assertBalance(String token, String accountId, int expected) throws Exception {
         mvc.perform(get("/api/finance/accounts")
                         .header("Authorization", "Bearer " + token))

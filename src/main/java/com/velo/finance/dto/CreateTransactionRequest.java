@@ -13,6 +13,8 @@ public record CreateTransactionRequest(
         @NotNull CategoryKind kind,
         @Positive int amount,
         @Size(max = 1000) String comment,
+        /** Дата операции (по умолчанию — сейчас; не в будущем). Опционально. */
+        java.time.Instant date,
         /** Привязка к аренде (оплата аренды / выкупной платёж). Опционально. */
         UUID rentalId,
         /** Привязка к активу (ремонт, выплата за повреждение). Опционально. */

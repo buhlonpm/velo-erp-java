@@ -170,12 +170,15 @@ public class FinanceService {
             throw new ConflictException("Тип операции не совпадает с типом статьи");
         }
 
+        if (request.date() != null && request.date().isAfter(Instant.now())) {
+            throw new BadRequestException("Дата операции не может быть в будущем");
+        }
         FinanceTransaction transaction = new FinanceTransaction();
         transaction.setAccount(account);
         transaction.setCategory(category);
         transaction.setKind(request.kind());
         transaction.setAmount(request.amount());
-        transaction.setDate(Instant.now());
+        transaction.setDate(request.date() != null ? request.date() : Instant.now());
         transaction.setComment(request.comment() != null ? request.comment() : "");
         transaction.setCreatedBy(author);
         if (request.rentalId() != null) {
