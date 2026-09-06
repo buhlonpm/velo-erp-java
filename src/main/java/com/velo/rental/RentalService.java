@@ -453,8 +453,8 @@ public class RentalService {
      * Досрочный возврат (редкий путь — клиент вернул раньше и просит деньги):
      * статус ВСЕГДА «завершена досрочно», все позиции возвращаются. Только при полной оплате (409).
      * Дата приёма — строго в календарный день ДО дня окончания аренды (в день окончания или позже
-     * — это обычное завершение, 409) и не раньше дня начала. Сумма возврата не больше переплаты
-     * (оплачено − начислено за фактический срок, 409): вернуть можно только разницу.
+     * — это обычное завершение, 409) и не раньше дня начала. Сумма возврата не больше оплаченного
+     * по аренде (409): конкретную сумму в пределах оплаченного выбирает оператор.
      * Для rent_to_own это «расторжение»: техника возвращается в парк в любой день не раньше
      * начала, БЕЗ проверки полной оплаты и БЕЗ возврата денег — внесённое не возвращается (409
      * на попытку рефанда).
@@ -483,11 +483,12 @@ public class RentalService {
         } else {
             assertEarlyReturnDay(rental, returnedAt);
             assertFullyPaid(rental, returnedAt);
-            int overpaid = financeTransactionRepository.paidSumByRentalId(rental.getId())
-                    - RentalAmounts.accruedActual(rental, returnedAt);
-            if (request != null && request.refundAmount() != null && request.refundAmount() > overpaid) {
-                throw new ConflictException("Сумма возврата не может быть больше переплаты ("
-                        + overpaid + " ₽)");
+            // потолок возврата — всё оплаченное по аренде: конкретную сумму решает оператор
+            // (начисленное за фактический срок на фронте — лишь подсказка-предзаполнение)
+            int paid = financeTransactionRepository.paidSumByRentalId(rental.getId());
+            if (request != null && request.refundAmount() != null && request.refundAmount() > paid) {
+                throw new ConflictException("Сумма возврата не может быть больше оплаченного ("
+                        + paid + " ₽)");
             }
         }
         rental.getItems().stream()

@@ -277,7 +277,7 @@ class RentalLifecycleTest {
                         "{\"date\":\"" + Instant.now().minus(3, ChronoUnit.DAYS) + "\"}")
                 .andExpect(status().isConflict());
 
-        // возврат больше переплаты (оплачено 2000 − начислено за 1 фактический день 1000 = 1000 ₽) → 409
+        // возврат больше оплаченного (2000 ₽) → 409
         String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS).toString();
         postJson(admin, "/api/rentals/" + rentalId + "/early-return",
                         "{\"date\":\"" + yesterday + "\",\"refundAmount\":2001,\"refundAccountId\":\""
@@ -325,6 +325,43 @@ class RentalLifecycleTest {
         mvc.perform(delete("/api/finance/transactions/" + paymentTxId)
                         .header("Authorization", "Bearer " + admin))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void earlyReturnRefundUpToPaid() throws Exception {
+        String admin = login();
+        String account = extract(getJson(admin, "/api/finance/accounts"), "id");
+        String customer = extract(postJson(admin, "/api/customers",
+                        "{\"fullName\":\"Оператор Решает\",\"phone\":\"+7 900 000-55-55\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String bike = extract(postJson(admin, "/api/assets",
+                        "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-ER2\",\"purchasePrice\":50000,"
+                                + "\"purchaseAccountId\":\"" + account + "\","
+                                + "\"purchasedAt\":\"2024-01-15T10:00:00Z\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        String rentalId = extract(postJson(admin, "/api/rentals",
+                        "{\"customerId\":\"" + customer + "\",\"duration\":2,\"durationUnit\":\"day\","
+                                + "\"items\":[{\"assetId\":\"" + bike + "\",\"rate\":1000}]}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/rentals/" + rentalId + "/issue",
+                        "{\"date\":\"" + Instant.now().minus(2, ChronoUnit.DAYS)
+                                .truncatedTo(ChronoUnit.SECONDS) + "\"}")
+                .andExpect(status().isOk());
+        postJson(admin, "/api/rentals/" + rentalId + "/payments",
+                        "{\"amount\":2000,\"accountId\":\"" + account + "\"}")
+                .andExpect(status().isCreated());
+
+        // возврат через сутки: расчётная переплата ~1000 ₽, но оператор волен вернуть больше —
+        // потолок только оплаченное (2000 ₽); 1500 ₽ проходит, сумма аренды фиксируется 2000−1500=500
+        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS).toString();
+        postJson(admin, "/api/rentals/" + rentalId + "/early-return",
+                        "{\"date\":\"" + yesterday + "\",\"refundAmount\":1500,\"refundAccountId\":\""
+                                + account + "\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed_early"))
+                .andExpect(jsonPath("$.amount").value(500))
+                .andExpect(jsonPath("$.paidAmount").value(2000))
+                .andExpect(jsonPath("$.refundedAmount").value(1500));
     }
 
     @Test

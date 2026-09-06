@@ -33,16 +33,6 @@ public final class RentalAmounts {
                 : rental.getItems().stream().mapToInt(item -> item.amount(at)).sum();
     }
 
-    /**
-     * Начисленное за фактический срок startAt → at, БЕЗ доплаты до конца периода
-     * (досрочный возврат: переплата = оплачено − accruedActual).
-     */
-    public static int accruedActual(Rental rental, Instant at) {
-        return rental.getKind() == RentalKind.RENT_TO_OWN
-                ? (rental.getBuyoutPrice() != null ? rental.getBuyoutPrice() : 0)
-                : rental.getItems().stream().mapToInt(item -> item.amountForPeriod(at)).sum();
-    }
-
     /** Итоговая сумма аренды: завершённая — оплачено − возвращено, иначе начисленное. */
     public static int total(Rental rental, Instant at, int paidAmount, int refundedAmount) {
         return isFinished(rental) ? paidAmount - refundedAmount : accrued(rental, at);
