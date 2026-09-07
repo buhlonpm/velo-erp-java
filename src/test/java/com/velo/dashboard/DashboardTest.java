@@ -59,6 +59,14 @@ class DashboardTest {
         postJson(admin, "/api/assets",
                 "{\"type\":\"battery\",\"inventoryNumber\":\"AKB-DB1\"" + purchase + "}")
                 .andExpect(status().isCreated());
+        // велосипед с комплектной (сразу смонтированной) АКБ: mounted считается в available
+        String bike3 = extract(postJson(admin, "/api/assets",
+                "{\"type\":\"bike\",\"inventoryNumber\":\"VIN-DB3\"" + purchase + "}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
+        postJson(admin, "/api/assets",
+                "{\"type\":\"battery\",\"inventoryNumber\":\"AKB-DB2\",\"purchasePrice\":0,"
+                        + "\"bundledBikeId\":\"" + bike3 + "\"}")
+                .andExpect(status().isCreated());
         String customer = extract(postJson(admin, "/api/customers",
                 "{\"fullName\":\"Даш Клиент\",\"phone\":\"+7 900 000-11-11\"}")
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "id");
@@ -83,12 +91,15 @@ class DashboardTest {
 
         mvc.perform(get("/api/dashboard").header("Authorization", "Bearer " + admin))
                 .andExpect(status().isOk())
-                // метрики по типам (порядок: bike, battery, charger): 2 велосипеда в аренде, 1 АКБ свободна
+                // метрики по типам (порядок: bike, battery, charger): 3 велосипеда, 2 в аренде;
+                // 2 АКБ, обе «свободны» (одна смонтирована — mounted считается в available)
                 .andExpect(jsonPath("$.assets[0].type").value("bike"))
-                .andExpect(jsonPath("$.assets[0].total").value(2))
+                .andExpect(jsonPath("$.assets[0].total").value(3))
                 .andExpect(jsonPath("$.assets[0].rented").value(2))
+                .andExpect(jsonPath("$.assets[0].available").value(1))
                 .andExpect(jsonPath("$.assets[1].type").value("battery"))
-                .andExpect(jsonPath("$.assets[1].available").value(1))
+                .andExpect(jsonPath("$.assets[1].total").value(2))
+                .andExpect(jsonPath("$.assets[1].available").value(2))
                 .andExpect(jsonPath("$.assets[2].type").value("charger"))
                 .andExpect(jsonPath("$.assets[2].total").value(0))
                 // просроченная — в overdue, подходящая к концу — в endingSoon, и не наоборот

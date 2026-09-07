@@ -65,8 +65,8 @@ public class DashboardService {
                     return new DashboardResponse.TypeStats(
                             type.getValue(),
                             ofType.size(),
-                            count(ofType, AssetStatus.AVAILABLE),
-                            count(ofType, AssetStatus.MOUNTED),
+                            // смонтированные АКБ/зарядники считаем свободными: они едут комплектом с велосипедом
+                            count(ofType, AssetStatus.AVAILABLE) + count(ofType, AssetStatus.MOUNTED),
                             count(ofType, AssetStatus.RESERVED),
                             count(ofType, AssetStatus.RENTED),
                             count(ofType, AssetStatus.MAINTENANCE));

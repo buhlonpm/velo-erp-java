@@ -12,12 +12,11 @@ public record DashboardResponse(
         /** Последние аренды (свежие сверху, до 5). */
         List<RentalRow> latest
 ) {
-    /** Счётчики активов одного типа по статусам. */
+    /** Счётчики активов одного типа по статусам; available включает смонтированные (mounted). */
     public record TypeStats(
             String type,
             long total,
             long available,
-            long mounted,
             long reserved,
             long rented,
             long maintenance
